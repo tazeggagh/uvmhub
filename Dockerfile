@@ -1,4 +1,5 @@
 FROM ubuntu:22.04
+# Node 20 will be installed via NodeSource below
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -11,8 +12,11 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     perl \
-    nodejs \
-    npm \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node 20 via NodeSource (avoids old Ubuntu default Node)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Clone UVM base library (open-source UVM 1.2)
