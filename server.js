@@ -2,7 +2,12 @@ const express    = require('express')
 const cors       = require('cors')
 const { exec }   = require('child_process')
 const fs         = require('fs')
-const { v4: uuidv4 } = require('uuid')
+// simple UUID that works on any Node version
+const uuidv4 = () =>
+  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16)
+  })
 
 const app  = express()
 const PORT = process.env.PORT || 3001
