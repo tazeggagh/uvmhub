@@ -1,9 +1,8 @@
 FROM ubuntu:22.04
-# Node 20 will be installed via NodeSource below
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Icarus Verilog + dependencies
+# 1. Install system deps + curl first
 RUN apt-get update && apt-get install -y \
     iverilog \
     curl \
@@ -14,16 +13,20 @@ RUN apt-get update && apt-get install -y \
     perl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node 20 via NodeSource (avoids old Ubuntu default Node)
+# 2. Install Node 20 via NodeSource (BEFORE npm install)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone UVM base library (open-source UVM 1.2)
+# 3. Verify versions (helpful for debugging)
+RUN node --version && npm --version
+
+# 4. Clone UVM library
 RUN git clone https://github.com/chiggs/uvm.git /uvm
 
 WORKDIR /app
 
+# 5. Install npm packages using Node 20
 COPY package.json .
 RUN npm install
 
