@@ -1,13 +1,17 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CACHE_BUST=6
+ENV CACHE_BUST=7
 
 # 1. System deps
 RUN apt-get update && apt-get install -y \
     iverilog \
     curl \
     git \
+    make \
+    gcc \
+    g++ \
+    perl \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Node 20
@@ -19,14 +23,8 @@ RUN node --version && npm --version
 
 WORKDIR /app
 
-# 3. Copy UVM files from repo (no git clone at build time)
+# 3. Copy UVM from repo (uvm/ folder must exist in your repo)
 COPY uvm/ /uvm/
-
-# Verify key files exist — build fails here if structure is wrong
-RUN ls /uvm/src/uvm_pkg.sv \
-    && ls /uvm/src/macros/uvm_macros.svh \
-    && ls /uvm/src/macros/uvm_tlm_defines.svh \
-    && echo "UVM files OK"
 
 # 4. App
 COPY package.json .
