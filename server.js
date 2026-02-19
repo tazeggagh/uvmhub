@@ -165,6 +165,10 @@ function runSimulation(req, res) {
   const driveClk = hasClkPort(svFiles)
 
   console.log(`isUVM=${isUVM} driveClk=${driveClk}`)
+  if (isUVM) {
+    const uvmCheck = UVM_DIR || '/usr/local/share/verilator/include/uvm-1.0'
+    console.log(`UVM incdir: ${uvmCheck} | uvm_pkg.sv exists: ${fs.existsSync(uvmCheck + '/uvm_pkg.sv')}`)
+  }
 
   // Now process with correct isUVM flag
   for (const p of svFiles) {
@@ -175,11 +179,22 @@ function runSimulation(req, res) {
   fs.writeFileSync(mainFile, makeMain(top, driveClk))
 
   // Build verilator command
-  // --uvm tells Verilator 5 to load its bundled UVM pkg; always use it for UVM designs
+  // Verilator 5.020 does NOT have --uvm flag; include UVM manually via -I and +incdir
   const uvmIncDir = UVM_DIR || '/usr/local/share/verilator/include/uvm-1.0'
   const uvmFlags = isUVM
-    ? ['--uvm', `-I${uvmIncDir}`, '+define+UVM_NO_DPI']
+    ? [
+        `+incdir+${uvmIncDir}`,
+        `-I${uvmIncDir}`,
+        '+define+UVM_NO_DPI',
+        '+define+UVM_REGEX_NO_DPI',
+        '-Wno-UNOPTFLAT',
+      ]
     : []
+
+  // For UVM: explicitly prepend uvm_pkg.sv so Verilator compiles the package
+  const uvmIncDir = isUVM ? (UVM_DIR || '/usr/local/share/verilator/include/uvm-1.0') : ''
+  const uvmPkgFile = isUVM ? `${uvmIncDir}/uvm_pkg.sv` : ''
+  const uvmSvFiles = (isUVM && fs.existsSync(uvmPkgFile)) ? [uvmPkgFile] : []
 
   const vlCmd = [
     'verilator', '--cc', '--sv', '--trace',
@@ -188,6 +203,7 @@ function runSimulation(req, res) {
     `--Mdir ${objDir}`,
     `--top-module ${top}`,
     ...uvmFlags,
+    ...uvmSvFiles,
     ...svFiles
   ].join(' ')
 
