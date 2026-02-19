@@ -1,4 +1,4 @@
-// UVM Simulator Backend v5 — Verilator
+// UVM Simulator Backend v6 — Verilator
 const express    = require('express')
 const cors       = require('cors')
 const { exec, execSync } = require('child_process')
@@ -9,10 +9,9 @@ const app  = express()
 const PORT = process.env.PORT || 3001
 
 const VERILATOR_VERSION = (() => {
-  try { return execSync('verilator --version').toString().trim() } catch(e) { return 'unknown' }
+  try { return execSync('verilator --version').toString().trim() } catch(e) { return 'not found' }
 })()
-
-console.log('Verilator:', VERILATOR_VERSION)
+console.log('Backend v6 starting. Verilator:', VERILATOR_VERSION)
 
 app.use(cors())
 app.use(express.json({ limit: '1mb' }))
@@ -30,11 +29,9 @@ function processCode(c) {
 // ── VCD Parser ────────────────────────────────────────────────────────────────
 function parseVCD(vcdPath) {
   if (!fs.existsSync(vcdPath)) return null
-  const lines   = fs.readFileSync(vcdPath, 'utf8').split('\n')
-  const signals = {}
-  const idMap   = {}
+  const lines = fs.readFileSync(vcdPath, 'utf8').split('\n')
+  const signals = {}, idMap = {}
   let time = 0, inDefs = true
-
   for (const line of lines) {
     const t = line.trim()
     if (t.startsWith('$var')) {
@@ -45,29 +42,32 @@ function parseVCD(vcdPath) {
     if (t === '$enddefinitions $end') { inDefs = false; continue }
     if (inDefs) continue
     if (t.startsWith('#')) { time = parseInt(t.slice(1)); continue }
-    const scalar = t.match(/^([01xz])(\S+)$/)
-    if (scalar) {
-      const name = idMap[scalar[2]]
-      if (name && signals[name]) signals[name].values.push({ time, val: scalar[1] })
-      continue
-    }
-    const vector = t.match(/^b([01xz]+)\s+(\S+)$/)
-    if (vector) {
-      const name = idMap[vector[2]]
-      if (name && signals[name]) signals[name].values.push({ time, val: vector[1] })
-    }
+    const sc = t.match(/^([01xz])(\S+)$/)
+    if (sc) { const n = idMap[sc[2]]; if (n && signals[n]) signals[n].values.push({ time, val: sc[1] }); continue }
+    const vc = t.match(/^b([01xz]+)\s+(\S+)$/)
+    if (vc) { const n = idMap[vc[2]]; if (n && signals[n]) signals[n].values.push({ time, val: vc[1] }) }
   }
   return signals
 }
 
-// ── C++ main template for Verilator ──────────────────────────────────────────
-function makeMain(top) {
-  return `
-#include "V${top}.h"
+// ── C++ main — drives clk, includes sc_time_stamp ────────────────────────────
+// Check if top module has a clk port by scanning the SV source
+function hasClkPort(svFiles) {
+  for (const f of svFiles) {
+    const src = fs.readFileSync(f, 'utf8')
+    if (/input\s+(?:logic\s+)?clk\b/.test(src)) return true
+  }
+  return false
+}
+
+function makeMain(top, driveClk) {
+  const clkLine = driveClk
+    ? `dut->clk = (t % 10) >= 5 ? 1 : 0;`
+    : `// no clk port — design drives its own clock`
+  return `#include "V${top}.h"
 #include "verilated.h"
 #include "verilated_vcd_c.h"
 
-// Required by Verilator when using --trace
 double sc_time_stamp() { return 0; }
 
 int main(int argc, char** argv) {
@@ -79,11 +79,11 @@ int main(int argc, char** argv) {
     dut->trace(vcd, 99);
     vcd->open("dump.vcd");
 
+    dut->eval();
+
     vluint64_t t = 0;
-    while (!Verilated::gotFinish() && t < 100000) {
-        if (t % 5 == 0) {
-            dut->clk = !dut->clk;
-        }
+    while (!Verilated::gotFinish() && t < 1000000) {
+        ${clkLine}
         dut->eval();
         vcd->dump(t);
         t++;
@@ -91,6 +91,7 @@ int main(int argc, char** argv) {
 
     vcd->close();
     dut->final();
+    delete vcd;
     delete dut;
     return 0;
 }
@@ -103,14 +104,13 @@ function runSimulation(req, res) {
   if (!code && !files?.length)
     return res.status(400).json({ error: 'No code provided' })
 
-  const dir    = `/tmp/sim_${uid()}`
-  const objDir = `${dir}/obj`
-  const simBin = `${objDir}/V${top}`
+  const dir     = `/tmp/sim_${uid()}`
+  const objDir  = `${dir}/obj`
+  const simBin  = `${objDir}/V${top}`
   const vcdFile = `${dir}/dump.vcd`
 
   fs.mkdirSync(objDir, { recursive: true })
 
-  // Write user SV files
   let svFiles = []
   if (files?.length) {
     for (const f of files) {
@@ -124,16 +124,14 @@ function runSimulation(req, res) {
     svFiles.push(p)
   }
 
-  // Write C++ main
+  const driveClk = hasClkPort(svFiles)
   const mainFile = `${dir}/main.cpp`
-  fs.writeFileSync(mainFile, makeMain(top))
+  fs.writeFileSync(mainFile, makeMain(top, driveClk))
+  console.log('driveClk:', driveClk)
 
-  // Step 1: verilator — generate C++
+  // Step 1: verilate
   const vlCmd = [
-    'verilator',
-    '--cc',
-    '--sv',
-    '--trace',
+    'verilator', '--cc', '--sv', '--trace',
     '--exe', mainFile,
     '-Wno-fatal', '-Wno-lint', '-Wno-style',
     `--Mdir ${objDir}`,
@@ -143,31 +141,31 @@ function runSimulation(req, res) {
 
   console.log('VERILATE:', vlCmd)
 
-  exec(vlCmd, { timeout: 30000, cwd: dir }, (err, _out, stderr) => {
-    if (err) {
+  exec(vlCmd, { timeout: 30000, cwd: dir }, (e1, _o, stderr) => {
+    if (e1) {
       fs.rmSync(dir, { recursive: true, force: true })
-      return res.json({ success: false, stage: 'compile', errors: stderr || err.message })
+      return res.json({ success: false, stage: 'compile', errors: stderr || e1.message })
     }
 
-    // Step 2: make — compile C++ to binary
+    // Step 2: make
     const makeCmd = `make -C ${objDir} -f V${top}.mk V${top} -j2`
     console.log('MAKE:', makeCmd)
 
-    exec(makeCmd, { timeout: 60000 }, (err2, _o, makeErr) => {
-      if (err2) {
+    exec(makeCmd, { timeout: 60000 }, (e2, _o2, makeErr) => {
+      if (e2) {
         fs.rmSync(dir, { recursive: true, force: true })
-        return res.json({ success: false, stage: 'build', errors: makeErr || err2.message })
+        return res.json({ success: false, stage: 'build', errors: makeErr || e2.message })
       }
 
-      // Step 3: run simulation
-      exec(`${simBin}`, { timeout: 60000, cwd: dir }, (err3, simOut, simErr) => {
-        const output  = simOut + (simErr || '')
+      // Step 3: run
+      exec(simBin, { timeout: 60000, cwd: dir }, (e3, simOut, simErr) => {
+        const output  = (simOut || '') + (simErr || '')
         const signals = parseVCD(vcdFile)
         fs.rmSync(dir, { recursive: true, force: true })
         res.json({
-          success: !err3,
-          stage:   err3 ? 'runtime' : 'done',
-          errors:  err3 ? output : null,
+          success: !e3 || output.includes('$finish'),
+          stage:   'done',
+          errors:  e3 ? output : null,
           output:  output.slice(0, 8000),
           signals
         })
@@ -179,7 +177,7 @@ function runSimulation(req, res) {
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.post('/api/simulator/run', runSimulation)
 app.post('/compile',           runSimulation)
-app.get('/health', (_, res) => res.json({ status: 'ok', node: process.version, verilator: VERILATOR_VERSION }))
-app.get('/api/health', (_, res) => res.json({ status: 'ok', node: process.version, verilator: VERILATOR_VERSION }))
+app.get('/health',     (_, res) => res.json({ status: 'ok', version: 'v6', node: process.version, verilator: VERILATOR_VERSION }))
+app.get('/api/health', (_, res) => res.json({ status: 'ok', version: 'v6', node: process.version, verilator: VERILATOR_VERSION }))
 
-app.listen(PORT, () => console.log(`UVM Simulator Backend v5 (Verilator) on :${PORT}  node ${process.version}`))
+app.listen(PORT, () => console.log(`Backend v6 on :${PORT}  node ${process.version}  ${VERILATOR_VERSION}`))
