@@ -17,10 +17,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 RUN node --version && npm --version
 
-# 3. Clone UVM then show exact file locations
-RUN git clone --depth=1 https://github.com/accellera-official/uvm-core.git /uvm
-RUN find /uvm -name "uvm_pkg.sv"
-RUN find /uvm -name "uvm_macros.svh"
+# 3. Clone UVM and print exact locations of both key files
+RUN git clone --depth=1 https://github.com/accellera-official/uvm-core.git /uvm \
+    && find /uvm -name "uvm_pkg.sv" \
+    && find /uvm -name "uvm_macros.svh"
 
 WORKDIR /app
 
