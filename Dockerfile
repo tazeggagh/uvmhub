@@ -1,13 +1,14 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CACHE_BUST=9
+ENV CACHE_BUST=10
 
 # 1. System deps
 RUN apt-get update && apt-get install -y \
     iverilog \
     curl \
     git \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Node 20
@@ -17,10 +18,14 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 RUN node --version && npm --version
 
-# 3. Clone chiggs/uvm — patched specifically for iverilog compatibility
-RUN git clone --depth=1 https://github.com/chiggs/uvm.git /uvm \
-    && find /uvm -name "uvm_pkg.sv" \
-    && find /uvm -name "uvm_macros.svh"
+# 3. Download UVM 1.1d — known to work with iverilog
+RUN mkdir -p /uvm && \
+    wget -q https://www.accellera.org/images/downloads/standards/uvm/uvm-1.1d.tar.gz -O /tmp/uvm.tar.gz && \
+    tar -xzf /tmp/uvm.tar.gz -C /tmp && \
+    cp -r /tmp/uvm-1.1d/src /uvm/src && \
+    rm -rf /tmp/uvm.tar.gz /tmp/uvm-1.1d && \
+    find /uvm -name "uvm_pkg.sv" && \
+    find /uvm -name "uvm_macros.svh"
 
 WORKDIR /app
 COPY package.json .
