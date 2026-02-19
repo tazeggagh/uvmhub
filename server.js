@@ -51,24 +51,41 @@ function parseVCD(vcdPath) {
 
 // ── Core simulation ───────────────────────────────────────────────────────────
 function runSimulation(req, res) {
-  const { code, top = 'tb_top' } = req.body
-  if (!code) return res.status(400).json({ error: 'No code provided' })
+  const { code, files, top = 'tb_top' } = req.body
+
+  // Support both single `code` string and multi-file `files` array
+  // files: [{ name: 'counter.sv', code: '...' }, { name: 'tb_top.sv', code: '...' }]
+  if (!code && !files?.length)
+    return res.status(400).json({ error: 'No code provided' })
 
   const dir     = `/tmp/sim_${uid()}`
-  const svFile  = `${dir}/design.sv`
   const vvpFile = `${dir}/sim.vvp`
   const vcdFile = `${dir}/dump.vcd`
 
   fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(svFile, code)
+
+  // Write all files to the temp dir
+  let svFiles = []
+  if (files?.length) {
+    for (const f of files) {
+      const path = `${dir}/${f.name}`
+      fs.writeFileSync(path, f.code)
+      svFiles.push(path)
+    }
+  } else {
+    const path = `${dir}/design.sv`
+    fs.writeFileSync(path, code)
+    svFiles.push(path)
+  }
 
   const ivCmd = [
     'iverilog', '-g2012',
-    `-I${UVM}`,
+    `-I${UVM}`,                        // uvm_pkg.sv lives here
+    `-I${UVM}/macros`,                 // uvm_macros.svh lives here
     `-DUVM_NO_DPI`,
     '-o', vvpFile,
     `-s ${top}`,
-    svFile,
+    ...svFiles,
     `${UVM}/uvm_pkg.sv`
   ].join(' ')
 
