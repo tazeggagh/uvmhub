@@ -1,93 +1,144 @@
-// UVM Simulator Backend v9 — Latest Verilator + UVM
-const express    = require('express')
-const cors       = require('cors')
-const { exec, execSync } = require('child_process')
-const fs         = require('fs')
-const path       = require('path')
+// UVM Simulator Backend v10 — Verilator (modern) + UVM-lite 2017
 
-const app  = express()
+const express = require('express')
+const cors = require('cors')
+const { exec, execSync } = require('child_process')
+const fs = require('fs')
+const path = require('path')
+
+const app = express()
 const PORT = process.env.PORT || 3001
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Tool detection
+// ─────────────────────────────────────────────────────────────────────────────
 const VERILATOR_VERSION = (() => {
-  try { return execSync('verilator --version').toString().trim() } catch(e) { return 'not found' }
+  try { return execSync('verilator --version').toString().trim() }
+  catch { return 'not found' }
 })()
 
-// UVM files copied from repo into /opt/uvm at build time
+const Z3_VERSION = (() => {
+  try { return execSync('z3 --version').toString().trim() }
+  catch { return 'not found' }
+})()
+
+console.log(`Backend v10 | ${VERILATOR_VERSION}`)
+console.log(`Z3: ${Z3_VERSION}`)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Locate UVM
+// ─────────────────────────────────────────────────────────────────────────────
 const UVM_DIR = (() => {
   const candidates = ['/opt/uvm', '/usr/local/share/verilator/include/uvm-1.0']
   for (const d of candidates) {
     if (fs.existsSync(`${d}/uvm_pkg.sv`)) return d
   }
   try {
-    const r = execSync('find /opt /usr/local -name "uvm_pkg.sv" 2>/dev/null | head -1').toString().trim()
+    const r = execSync('find /opt /usr/local -name "uvm_pkg.sv" 2>/dev/null | head -1')
+      .toString().trim()
     return r ? path.dirname(r) : '/opt/uvm'
-  } catch(e) { return '/opt/uvm' }
+  } catch {
+    return '/opt/uvm'
+  }
 })()
 
 const UVM_PKG = `${UVM_DIR}/uvm_pkg.sv`
 
-console.log(`Backend v9 | ${VERILATOR_VERSION}`)
 console.log(`UVM dir: ${UVM_DIR} | uvm_pkg.sv exists: ${fs.existsSync(UVM_PKG)}`)
 
 app.use(cors())
 app.use(express.json({ limit: '1mb' }))
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Utils
+// ─────────────────────────────────────────────────────────────────────────────
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
 }
 
-function processCode(c, isUVM = false) {
-  // Always strip SV-side VCD calls — C++ harness owns tracing
-  let out = c
+function processCode(code, isUVM = false) {
+  let out = code
     .replace(/^\s*\$dumpfile\s*\([^)]*\)\s*;\s*$/gm, '// $dumpfile removed by backend')
     .replace(/^\s*\$dumpvars\s*\([^)]*\)\s*;\s*$/gm, '// $dumpvars removed by backend')
 
   if (isUVM) {
-    // Remove any existing UVM includes/imports to avoid duplicates
     out = out
       .replace(/^\s*`include\s+"uvm_macros\.svh"\s*$/gm, '')
       .replace(/^\s*import\s+uvm_pkg\s*::\s*\*\s*;\s*$/gm, '')
-    // Inject clean UVM preamble right after `timescale (or at top)
+
     const preamble = '`include "uvm_macros.svh"\nimport uvm_pkg::*;\n'
+
     if (/`timescale/.test(out)) {
       out = out.replace(/(^`timescale[^\n]*\n)/m, `$1${preamble}`)
     } else {
       out = preamble + out
     }
   } else {
-    // Non-UVM: strip any stray UVM directives
     out = out
       .replace(/^\s*import\s+uvm_pkg\s*::\s*\*\s*;\s*$/gm, '')
       .replace(/^\s*`include\s+"uvm_macros\.svh"\s*$/gm, '')
   }
+
   return out
 }
 
-// ── VCD Parser ────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// VCD parser
+// ─────────────────────────────────────────────────────────────────────────────
 function parseVCD(vcdPath) {
   if (!fs.existsSync(vcdPath)) return null
+
   const lines = fs.readFileSync(vcdPath, 'utf8').split('\n')
-  const signals = {}, idMap = {}
-  let time = 0, inDefs = true
+  const signals = {}
+  const idMap = {}
+
+  let time = 0
+  let inDefs = true
+
   for (const line of lines) {
     const t = line.trim()
+
     if (t.startsWith('$var')) {
       const m = t.match(/\$var\s+\S+\s+(\d+)\s+(\S+)\s+(\S+)/)
-      if (m) { idMap[m[2]] = m[3]; signals[m[3]] = { width: +m[1], values: [] } }
+      if (m) {
+        idMap[m[2]] = m[3]
+        signals[m[3]] = { width: +m[1], values: [] }
+      }
       continue
     }
-    if (t === '$enddefinitions $end') { inDefs = false; continue }
+
+    if (t === '$enddefinitions $end') {
+      inDefs = false
+      continue
+    }
+
     if (inDefs) continue
-    if (t.startsWith('#')) { time = parseInt(t.slice(1)); continue }
+
+    if (t.startsWith('#')) {
+      time = parseInt(t.slice(1))
+      continue
+    }
+
     const sc = t.match(/^([01xz])(\S+)$/)
-    if (sc) { const n = idMap[sc[2]]; if (n && signals[n]) signals[n].values.push({ time, val: sc[1] }); continue }
+    if (sc) {
+      const n = idMap[sc[2]]
+      if (n && signals[n]) signals[n].values.push({ time, val: sc[1] })
+      continue
+    }
+
     const vc = t.match(/^b([01xz]+)\s+(\S+)$/)
-    if (vc) { const n = idMap[vc[2]]; if (n && signals[n]) signals[n].values.push({ time, val: vc[1] }) }
+    if (vc) {
+      const n = idMap[vc[2]]
+      if (n && signals[n]) signals[n].values.push({ time, val: vc[1] })
+    }
   }
+
   return signals
 }
 
-// ── Detect if design uses UVM ─────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Detection helpers
+// ─────────────────────────────────────────────────────────────────────────────
 function usesUVM(svFiles) {
   for (const f of svFiles) {
     const src = fs.readFileSync(f, 'utf8')
@@ -106,11 +157,14 @@ function hasClkPort(svFiles) {
   return false
 }
 
-// ── C++ main ──────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// C++ harness
+// ─────────────────────────────────────────────────────────────────────────────
 function makeMain(top, driveClk) {
   const clkLine = driveClk
     ? `dut->clk = (t % 10) >= 5 ? 1 : 0;`
     : `// self-clocking design`
+
   return `#include "V${top}.h"
 #include "verilated.h"
 #include "verilated_vcd_c.h"
@@ -122,39 +176,48 @@ int main(int argc, char** argv) {
     VerilatedVcdC* vcd = new VerilatedVcdC;
     dut->trace(vcd, 99);
     vcd->open("dump.vcd");
+
     uint64_t t = 0;
-    // Initial eval + dump at t=0
+
     dut->eval();
     vcd->dump(t);
+
     while (!Verilated::gotFinish() && t < 1000000) {
         t++;
         ${clkLine}
         dut->eval();
         vcd->dump(t);
     }
+
     vcd->close();
     dut->final();
-    delete vcd; delete dut;
+    delete vcd;
+    delete dut;
     return 0;
 }
 `
 }
 
-// ── Core simulation ───────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Core simulation
+// ─────────────────────────────────────────────────────────────────────────────
 function runSimulation(req, res) {
   const { code, files, top = 'tb_top' } = req.body
-  if (!code && !files?.length)
-    return res.status(400).json({ error: 'No code provided' })
 
-  const dir    = `/tmp/sim_${uid()}`
+  if (!code && !files?.length) {
+    return res.status(400).json({ error: 'No code provided' })
+  }
+
+  const dir = `/tmp/sim_${uid()}`
   const objDir = `${dir}/obj`
   const simBin = `${objDir}/V${top}`
   const vcdFile = `${dir}/dump.vcd`
 
   fs.mkdirSync(objDir, { recursive: true })
 
-  // Write raw files first so usesUVM() / hasClkPort() can scan them
+  // write files
   let svFiles = []
+
   if (files?.length) {
     for (const f of files) {
       const p = `${dir}/${f.name}`
@@ -167,13 +230,12 @@ function runSimulation(req, res) {
     svFiles.push(p)
   }
 
-  const isUVM    = usesUVM(svFiles)
+  const isUVM = usesUVM(svFiles)
   const driveClk = hasClkPort(svFiles)
 
   console.log(`isUVM=${isUVM} driveClk=${driveClk}`)
-  if (isUVM) console.log(`UVM dir: ${UVM_DIR} | uvm_pkg.sv exists: ${fs.existsSync(UVM_PKG)}`)
 
-  // Re-write files with processed content (UVM preamble injection, VCD stripping)
+  // rewrite processed
   for (const p of svFiles) {
     fs.writeFileSync(p, processCode(fs.readFileSync(p, 'utf8'), isUVM))
   }
@@ -181,17 +243,23 @@ function runSimulation(req, res) {
   const mainFile = `${dir}/main.cpp`
   fs.writeFileSync(mainFile, makeMain(top, driveClk))
 
-  // UVM flags: no --uvm flag in this Verilator version; include manually
   const uvmSvFiles = isUVM && fs.existsSync(UVM_PKG) ? [UVM_PKG] : []
+
   const uvmFlags = isUVM
     ? [
         '--timing',
+        '--assert',
+        '--trace-fst',
+
         `+incdir+${UVM_DIR}`,
         `+incdir+${UVM_DIR}/macros`,
         `-I${UVM_DIR}`,
+
         '+define+UVM_NO_DPI',
         '+define+UVM_REGEX_NO_DPI',
+        '+define+UVM_OBJECT_MUST_HAVE_CONSTRUCTOR',
         '+define+UVM_NO_DEPRECATED',
+
         '-Wno-UNOPTFLAT',
         '-Wno-MULTIDRIVEN',
         '-Wno-TIMESCALEMOD',
@@ -226,14 +294,16 @@ function runSimulation(req, res) {
       }
 
       exec(simBin, { timeout: 60000, cwd: dir }, (e3, simOut, simErr) => {
-        const output  = (simOut || '') + (simErr || '')
+        const output = (simOut || '') + (simErr || '')
         const signals = parseVCD(vcdFile)
+
         fs.rmSync(dir, { recursive: true, force: true })
+
         res.json({
           success: !e3 || output.includes('$finish'),
-          stage:   'done',
-          errors:  e3 && !output.includes('$finish') ? output : null,
-          output:  output.slice(0, 8000),
+          stage: 'done',
+          errors: e3 && !output.includes('$finish') ? output : null,
+          output: output.slice(0, 8000),
           signals
         })
       })
@@ -241,22 +311,34 @@ function runSimulation(req, res) {
   })
 }
 
-// ── Routes ────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Routes
+// ─────────────────────────────────────────────────────────────────────────────
 app.post('/api/simulator/run', runSimulation)
-app.post('/compile',           runSimulation)
+app.post('/compile', runSimulation)
+
 app.get('/health', (_, res) => res.json({
-  status: 'ok', version: 'v9',
+  status: 'ok',
+  version: 'v10',
   node: process.version,
   verilator: VERILATOR_VERSION,
-  uvm_dir: UVM_DIR,
-  uvm_pkg_exists: fs.existsSync(UVM_PKG)
-}))
-app.get('/api/health', (_, res) => res.json({
-  status: 'ok', version: 'v9',
-  node: process.version,
-  verilator: VERILATOR_VERSION,
+  z3: Z3_VERSION,
+  uvm_support: 'lite-2017',
   uvm_dir: UVM_DIR,
   uvm_pkg_exists: fs.existsSync(UVM_PKG)
 }))
 
-app.listen(PORT, () => console.log(`Backend v9 on :${PORT} | ${VERILATOR_VERSION}`))
+app.get('/api/health', (_, res) => res.json({
+  status: 'ok',
+  version: 'v10',
+  node: process.version,
+  verilator: VERILATOR_VERSION,
+  z3: Z3_VERSION,
+  uvm_support: 'lite-2017',
+  uvm_dir: UVM_DIR,
+  uvm_pkg_exists: fs.existsSync(UVM_PKG)
+}))
+
+app.listen(PORT, () =>
+  console.log(`Backend v10 on :${PORT} | ${VERILATOR_VERSION}`)
+)
