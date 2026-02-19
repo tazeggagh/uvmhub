@@ -1,7 +1,7 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CACHE_BUST=16
+ENV CACHE_BUST=17
 
 # ── 1. System deps ────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y \
@@ -25,13 +25,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# ── 4. Verify + locate UVM ───────────────────────────────────────────────────
+# ── 4. Verify tools ───────────────────────────────────────────────────────────
 RUN verilator --version && node --version && npm --version
-RUN echo "=== UVM file search ===" && \
-    find / -name "uvm_pkg.sv" 2>/dev/null || echo "uvm_pkg.sv NOT FOUND ANYWHERE" && \
-    find / -name "uvm_macros.svh" 2>/dev/null || echo "uvm_macros.svh NOT FOUND ANYWHERE" && \
-    echo "=== Verilator share dir ===" && \
-    find /usr/local/share/verilator -type d | head -30
 
 # ── 5. App ────────────────────────────────────────────────────────────────────
 WORKDIR /app
@@ -39,5 +34,6 @@ COPY package.json .
 RUN npm install
 COPY server.js .
 
-EXPOSE 3001
-CMD ["node", "server.js"]
+# ── 6. Copy UVM from repo ─────────────────────────────────────────────────────
+COPY uvm/ /opt/uvm/
+RUN echo "UVM files in /opt/uvm:" && ls /opt/uvm/
