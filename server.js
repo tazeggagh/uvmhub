@@ -1,19 +1,17 @@
-// UVM Simulator Backend v3
-const express  = require('express')
-const cors     = require('cors')
-const { exec } = require('child_process')
-const fs       = require('fs')
+// UVM Simulator Backend v4
+const express    = require('express')
+const cors       = require('cors')
+const { exec, execSync } = require('child_process')
+const fs         = require('fs')
+const path       = require('path')
 
 const app  = express()
 const PORT = process.env.PORT || 3001
 
-// Find UVM files dynamically at startup
-const { execSync } = require('child_process')
-
+// ── UVM paths (chiggs/uvm → /uvm/distrib/src) ────────────────────────────────
 const UVM     = '/uvm/distrib/src'
 const UVM_PKG = '/uvm/distrib/src/uvm_pkg.sv'
 
-// Find uvm_macros.svh dynamically (in case path varies)
 let UVM_MACRO = ''
 try {
   UVM_MACRO = execSync('find /uvm/distrib -name "uvm_macros.svh" | head -1')
@@ -22,28 +20,20 @@ try {
   UVM_MACRO = '/uvm/distrib/src/uvm_macros.svh'
 }
 
-// Search for uvm_macros.svh anywhere under /uvm
-let UVM_MACRO = ''
-try {
-  UVM_MACRO = execSync('find /uvm -name "uvm_macros.svh" | head -1')
-    .toString().trim()
-} catch(e) {}
+const UVM_MACRO_DIR = UVM_MACRO ? path.dirname(UVM_MACRO) : UVM
 
 console.log('UVM_PKG   :', UVM_PKG,   '→ exists:', fs.existsSync(UVM_PKG))
 console.log('UVM_MACRO :', UVM_MACRO, '→ exists:', fs.existsSync(UVM_MACRO))
 
-// Derive include paths from macro file location
-const UVM_MACRO_DIR = UVM_MACRO ? require('path').dirname(UVM_MACRO) : `${UVM}/macros`
-
 app.use(cors())
 app.use(express.json({ limit: '1mb' }))
 
-// ── Inline UUID ───────────────────────────────────────────────────────────────
+// ── Inline UID ────────────────────────────────────────────────────────────────
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
 }
 
-// ── Strip UVM boilerplate users might include ─────────────────────────────────
+// ── Strip UVM boilerplate the user might include ──────────────────────────────
 function processCode(c) {
   return c
     .replace(/^\s*import\s+uvm_pkg\s*::\s*\*\s*;\s*$/gm, '')
@@ -116,12 +106,12 @@ function runSimulation(req, res) {
     `-I${UVM}/dpi`,
     '-DUVM_NO_DPI',
     '-DUVM_REGEX_NO_DPI',
-    '-DUVM_OBJECT_DO_NOT_NEED_CONSTRUCTOR',  // chiggs/uvm iverilog compat
+    '-DUVM_OBJECT_DO_NOT_NEED_CONSTRUCTOR',
     '-o', vvpFile,
     '-s', top,
-    UVM_MACRO,
-    UVM_PKG,
-    ...svFiles
+    UVM_MACRO,   // macros first
+    UVM_PKG,     // pkg second
+    ...svFiles   // user code last
   ].join(' ')
 
   console.log('CMD:', cmd)
@@ -148,7 +138,17 @@ function runSimulation(req, res) {
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.post('/api/simulator/run', runSimulation)
 app.post('/compile',           runSimulation)
-app.get('/health',     (_, res) => res.json({ status: 'ok', node: process.version, uvm_macro: UVM_MACRO, uvm_pkg: UVM_PKG, uvm_macro_exists: fs.existsSync(UVM_MACRO), uvm_pkg_exists: fs.existsSync(UVM_PKG) }))
-app.get('/api/health', (_, res) => res.json({ status: 'ok', node: process.version, uvm_macro: UVM_MACRO, uvm_pkg: UVM_PKG, uvm_macro_exists: fs.existsSync(UVM_MACRO), uvm_pkg_exists: fs.existsSync(UVM_PKG) }))
+app.get('/health',     (_, res) => res.json({
+  status: 'ok', node: process.version,
+  uvm_macro: UVM_MACRO, uvm_pkg: UVM_PKG,
+  uvm_macro_exists: fs.existsSync(UVM_MACRO),
+  uvm_pkg_exists:   fs.existsSync(UVM_PKG)
+}))
+app.get('/api/health', (_, res) => res.json({
+  status: 'ok', node: process.version,
+  uvm_macro: UVM_MACRO, uvm_pkg: UVM_PKG,
+  uvm_macro_exists: fs.existsSync(UVM_MACRO),
+  uvm_pkg_exists:   fs.existsSync(UVM_PKG)
+}))
 
-app.listen(PORT, () => console.log(`UVM Simulator Backend v3 on :${PORT}  node ${process.version}`))
+app.listen(PORT, () => console.log(`UVM Simulator Backend v4 on :${PORT}  node ${process.version}`))
