@@ -5,7 +5,7 @@ const fs       = require('fs')
 
 const app  = express()
 const PORT = process.env.PORT || 3001
-const UVM  = '/uvm/src'
+const UVM  = '/uvm/src'   // accellera-official/uvm-core structure
 
 app.use(cors())
 app.use(express.json({ limit: '1mb' }))
@@ -64,29 +64,39 @@ function runSimulation(req, res) {
 
   fs.mkdirSync(dir, { recursive: true })
 
+  // Strip uvm_pkg import and uvm_macros include from user code
+  // — the backend adds these explicitly in the correct order
+  const cleanCode = (files?.length ? null : code)
+  const processCode = c => c
+    .replace(/^\s*import\s+uvm_pkg\s*::\s*\*\s*;\s*$/gm, '')
+    .replace(/^\s*`include\s+"uvm_macros\.svh"\s*$/gm, '')
+
   // Write all files to the temp dir
   let svFiles = []
   if (files?.length) {
     for (const f of files) {
       const path = `${dir}/${f.name}`
-      fs.writeFileSync(path, f.code)
+      fs.writeFileSync(path, processCode(f.code))
       svFiles.push(path)
     }
   } else {
     const path = `${dir}/design.sv`
-    fs.writeFileSync(path, code)
+    fs.writeFileSync(path, processCode(code))
     svFiles.push(path)
   }
 
   const ivCmd = [
     'iverilog', '-g2012',
-    `-I${UVM}`,                        // uvm_pkg.sv lives here
-    `-I${UVM}/macros`,                 // uvm_macros.svh lives here
-    `-DUVM_NO_DPI`,
+    `-I${UVM}`,                  // main src path
+    `-I${UVM}/macros`,           // macros subfolder
+    `-I${UVM}/dpi`,              // dpi subfolder (needed by some includes)
+    `-DUVM_NO_DPI`,              // skip DPI implementation
+    `-DUVM_REGEX_NO_DPI`,        // skip regex DPI
     '-o', vvpFile,
     `-s ${top}`,
     ...svFiles,
-    `${UVM}/uvm_pkg.sv`
+    `${UVM}/uvm_macros.svh`,     // macros FIRST before pkg
+    `${UVM}/uvm_pkg.sv`          // pkg AFTER macros
   ].join(' ')
 
   exec(ivCmd, { timeout: 30000 }, (err, _out, stderr) => {
