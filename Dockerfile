@@ -1,7 +1,7 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CACHE_BUST=17
+ENV CACHE_BUST=18
 
 # ── 1. System deps ────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y \
@@ -34,6 +34,10 @@ COPY package.json .
 RUN npm install
 COPY server.js .
 
-# ── 6. Copy UVM from repo ─────────────────────────────────────────────────────
+# ── 6. Copy UVM from repo into /opt/uvm ──────────────────────────────────────
+RUN mkdir -p /opt/uvm
 COPY uvm/ /opt/uvm/
-RUN echo "UVM files in /opt/uvm:" && ls /opt/uvm/
+RUN echo "=== UVM contents ===" && find /opt/uvm -type f | head -20
+
+EXPOSE 3001
+CMD ["node", "server.js"]
