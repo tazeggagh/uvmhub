@@ -1,4 +1,4 @@
-// UVM Simulator Backend v7 — Verilator 5 + UVM
+// UVM Simulator Backend v8 — Verilator 5 + UVM
 const express    = require('express')
 const cors       = require('cors')
 const { exec, execSync } = require('child_process')
@@ -22,7 +22,7 @@ const UVM_PKG = (() => {
 
 const UVM_DIR = UVM_PKG ? path.dirname(UVM_PKG) : ''
 
-console.log(`Backend v7 | ${VERILATOR_VERSION}`)
+console.log(`Backend v8 | ${VERILATOR_VERSION}`)
 console.log(`UVM pkg: ${UVM_PKG || 'not found'} → exists: ${fs.existsSync(UVM_PKG)}`)
 
 app.use(cors())
@@ -36,6 +36,9 @@ function processCode(c) {
   return c
     .replace(/^\s*import\s+uvm_pkg\s*::\s*\*\s*;\s*$/gm, '')
     .replace(/^\s*`include\s+"uvm_macros\.svh"\s*$/gm, '')
+    // Strip SV-side VCD calls — C++ harness owns tracing
+    .replace(/^\s*\$dumpfile\s*\([^)]*\)\s*;\s*$/gm, '// $dumpfile removed by backend')
+    .replace(/^\s*\$dumpvars\s*\([^)]*\)\s*;\s*$/gm, '// $dumpvars removed by backend')
 }
 
 // ── VCD Parser ────────────────────────────────────────────────────────────────
@@ -89,8 +92,6 @@ function makeMain(top, driveClk) {
 #include "verilated.h"
 #include "verilated_vcd_c.h"
 
-double sc_time_stamp() { return 0; }
-
 int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
     V${top}* dut = new V${top};
@@ -98,13 +99,15 @@ int main(int argc, char** argv) {
     VerilatedVcdC* vcd = new VerilatedVcdC;
     dut->trace(vcd, 99);
     vcd->open("dump.vcd");
+    uint64_t t = 0;
+    // Initial eval + dump at t=0
     dut->eval();
-    vluint64_t t = 0;
+    vcd->dump(t);
     while (!Verilated::gotFinish() && t < 1000000) {
+        t++;
         ${clkLine}
         dut->eval();
         vcd->dump(t);
-        t++;
     }
     vcd->close();
     dut->final();
@@ -200,18 +203,18 @@ function runSimulation(req, res) {
 app.post('/api/simulator/run', runSimulation)
 app.post('/compile',           runSimulation)
 app.get('/health', (_, res) => res.json({
-  status: 'ok', version: 'v7',
+  status: 'ok', version: 'v8',
   node: process.version,
   verilator: VERILATOR_VERSION,
   uvm_pkg: UVM_PKG,
   uvm_exists: fs.existsSync(UVM_PKG)
 }))
 app.get('/api/health', (_, res) => res.json({
-  status: 'ok', version: 'v7',
+  status: 'ok', version: 'v8',
   node: process.version,
   verilator: VERILATOR_VERSION,
   uvm_pkg: UVM_PKG,
   uvm_exists: fs.existsSync(UVM_PKG)
 }))
 
-app.listen(PORT, () => console.log(`Backend v7 on :${PORT} | ${VERILATOR_VERSION}`))
+app.listen(PORT, () => console.log(`Backend v8 on :${PORT} | ${VERILATOR_VERSION}`))
