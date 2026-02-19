@@ -10,8 +10,17 @@ const PORT = process.env.PORT || 3001
 // Find UVM files dynamically at startup
 const { execSync } = require('child_process')
 
-const UVM     = '/uvm/src'
-const UVM_PKG = '/uvm/src/uvm_pkg.sv'
+const UVM     = '/uvm/distrib/src'
+const UVM_PKG = '/uvm/distrib/src/uvm_pkg.sv'
+
+// Find uvm_macros.svh dynamically (in case path varies)
+let UVM_MACRO = ''
+try {
+  UVM_MACRO = execSync('find /uvm/distrib -name "uvm_macros.svh" | head -1')
+    .toString().trim()
+} catch(e) {
+  UVM_MACRO = '/uvm/distrib/src/uvm_macros.svh'
+}
 
 // Search for uvm_macros.svh anywhere under /uvm
 let UVM_MACRO = ''
@@ -107,11 +116,12 @@ function runSimulation(req, res) {
     `-I${UVM}/dpi`,
     '-DUVM_NO_DPI',
     '-DUVM_REGEX_NO_DPI',
+    '-DUVM_OBJECT_DO_NOT_NEED_CONSTRUCTOR',  // chiggs/uvm iverilog compat
     '-o', vvpFile,
     '-s', top,
-    UVM_MACRO,   // ← macros FIRST
-    UVM_PKG,     // ← pkg SECOND
-    ...svFiles   // ← user code LAST
+    UVM_MACRO,
+    UVM_PKG,
+    ...svFiles
   ].join(' ')
 
   console.log('CMD:', cmd)
