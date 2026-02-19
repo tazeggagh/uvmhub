@@ -8,14 +8,11 @@ const path       = require('path')
 const app  = express()
 const PORT = process.env.PORT || 3001
 
-// Verilator UVM support path (built-in since v4.020)
-const VERILATOR_ROOT = (() => {
-  try { return execSync('verilator --getenv VERILATOR_ROOT').toString().trim() } catch(e) { return '/usr/share/verilator' }
+const VERILATOR_VERSION = (() => {
+  try { return execSync('verilator --version').toString().trim() } catch(e) { return 'unknown' }
 })()
-const UVM_PKG = `${VERILATOR_ROOT}/include/uvm-1.0/uvm_pkg.sv`
 
-console.log('Verilator root:', VERILATOR_ROOT)
-console.log('UVM pkg:', UVM_PKG, '→ exists:', fs.existsSync(UVM_PKG))
+console.log('Verilator:', VERILATOR_VERSION)
 
 app.use(cors())
 app.use(express.json({ limit: '1mb' }))
@@ -63,18 +60,51 @@ function parseVCD(vcdPath) {
   return signals
 }
 
+// ── C++ main template for Verilator ──────────────────────────────────────────
+function makeMain(top) {
+  return `
+#include "V${top}.h"
+#include "verilated.h"
+#include "verilated_vcd_c.h"
+
+int main(int argc, char** argv) {
+    Verilated::commandArgs(argc, argv);
+    V${top}* top = new V${top};
+
+    VerilatedVcdC* vcd = new VerilatedVcdC;
+    Verilated::traceEverOn(true);
+    top->trace(vcd, 99);
+    vcd->open("dump.vcd");
+
+    vluint64_t t = 0;
+    while (!Verilated::gotFinish() && t < 100000) {
+        top->eval();
+        vcd->dump(t);
+        t++;
+    }
+
+    vcd->close();
+    top->final();
+    delete top;
+    return 0;
+}
+`
+}
+
 // ── Core simulation ───────────────────────────────────────────────────────────
 function runSimulation(req, res) {
   const { code, files, top = 'tb_top' } = req.body
   if (!code && !files?.length)
     return res.status(400).json({ error: 'No code provided' })
 
-  const dir     = `/tmp/sim_${uid()}`
+  const dir    = `/tmp/sim_${uid()}`
+  const objDir = `${dir}/obj`
+  const simBin = `${objDir}/V${top}`
   const vcdFile = `${dir}/dump.vcd`
-  const simBin  = `${dir}/sim`
 
-  fs.mkdirSync(dir, { recursive: true })
+  fs.mkdirSync(objDir, { recursive: true })
 
+  // Write user SV files
   let svFiles = []
   if (files?.length) {
     for (const f of files) {
@@ -88,48 +118,53 @@ function runSimulation(req, res) {
     svFiles.push(p)
   }
 
-  // Verilator compile step
-  const uvmInclude = fs.existsSync(UVM_PKG)
-    ? `--uvm`
-    : ''
+  // Write C++ main
+  const mainFile = `${dir}/main.cpp`
+  fs.writeFileSync(mainFile, makeMain(top))
 
+  // Step 1: verilator — generate C++
   const vlCmd = [
     'verilator',
-    '--binary',           // compile to executable directly
-    '--sv',               // SystemVerilog mode
-    '-j 0',              // parallel compile
-    '+define+UVM_NO_DPI',
-    uvmInclude,
-    `--Mdir ${dir}/obj`,
-    `-o ${simBin}`,
+    '--cc',
+    '--sv',
+    '--trace',
+    '--exe', mainFile,
+    '-Wno-fatal', '-Wno-lint', '-Wno-style',
+    `--Mdir ${objDir}`,
     `--top-module ${top}`,
-    '--trace',            // enable VCD tracing
-    '--trace-file dump.vcd',
-    '-Wno-fatal',         // warnings don't stop compile
-    '-Wno-lint',
-    '-Wno-style',
     ...svFiles
-  ].filter(Boolean).join(' ')
+  ].join(' ')
 
-  console.log('CMD:', vlCmd)
+  console.log('VERILATE:', vlCmd)
 
-  exec(vlCmd, { timeout: 60000, cwd: dir }, (err, _out, stderr) => {
+  exec(vlCmd, { timeout: 30000, cwd: dir }, (err, _out, stderr) => {
     if (err) {
       fs.rmSync(dir, { recursive: true, force: true })
       return res.json({ success: false, stage: 'compile', errors: stderr || err.message })
     }
 
-    // Run simulation
-    exec(`${simBin} +UVM_TESTNAME=${top}`, { timeout: 60000, cwd: dir }, (err2, simOut, simErr) => {
-      const output  = simOut + (simErr || '')
-      const signals = parseVCD(vcdFile)
-      fs.rmSync(dir, { recursive: true, force: true })
-      res.json({
-        success: !err2,
-        stage:   err2 ? 'runtime' : 'done',
-        errors:  err2 ? output : null,
-        output:  output.slice(0, 8000),
-        signals
+    // Step 2: make — compile C++ to binary
+    const makeCmd = `make -C ${objDir} -f V${top}.mk V${top} -j2`
+    console.log('MAKE:', makeCmd)
+
+    exec(makeCmd, { timeout: 60000 }, (err2, _o, makeErr) => {
+      if (err2) {
+        fs.rmSync(dir, { recursive: true, force: true })
+        return res.json({ success: false, stage: 'build', errors: makeErr || err2.message })
+      }
+
+      // Step 3: run simulation
+      exec(`${simBin}`, { timeout: 60000, cwd: dir }, (err3, simOut, simErr) => {
+        const output  = simOut + (simErr || '')
+        const signals = parseVCD(vcdFile)
+        fs.rmSync(dir, { recursive: true, force: true })
+        res.json({
+          success: !err3,
+          stage:   err3 ? 'runtime' : 'done',
+          errors:  err3 ? output : null,
+          output:  output.slice(0, 8000),
+          signals
+        })
       })
     })
   })
@@ -138,19 +173,7 @@ function runSimulation(req, res) {
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.post('/api/simulator/run', runSimulation)
 app.post('/compile',           runSimulation)
-app.get('/health', (_, res) => res.json({
-  status: 'ok',
-  node: process.version,
-  verilator: (() => { try { return execSync('verilator --version').toString().trim() } catch(e) { return 'not found' } })(),
-  uvm_pkg: UVM_PKG,
-  uvm_exists: fs.existsSync(UVM_PKG)
-}))
-app.get('/api/health', (_, res) => res.json({
-  status: 'ok',
-  node: process.version,
-  verilator: (() => { try { return execSync('verilator --version').toString().trim() } catch(e) { return 'not found' } })(),
-  uvm_pkg: UVM_PKG,
-  uvm_exists: fs.existsSync(UVM_PKG)
-}))
+app.get('/health', (_, res) => res.json({ status: 'ok', node: process.version, verilator: VERILATOR_VERSION }))
+app.get('/api/health', (_, res) => res.json({ status: 'ok', node: process.version, verilator: VERILATOR_VERSION }))
 
 app.listen(PORT, () => console.log(`UVM Simulator Backend v5 (Verilator) on :${PORT}  node ${process.version}`))
