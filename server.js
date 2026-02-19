@@ -109,9 +109,9 @@ function runSimulation(req, res) {
     '-DUVM_REGEX_NO_DPI',
     '-o', vvpFile,
     '-s', top,
-    ...svFiles,
-    UVM_MACRO,
-    UVM_PKG
+    UVM_MACRO,   // ← macros FIRST
+    UVM_PKG,     // ← pkg SECOND
+    ...svFiles   // ← user code LAST
   ].join(' ')
 
   console.log('CMD:', cmd)
