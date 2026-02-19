@@ -1,16 +1,21 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CACHE_BUST=11
+ENV CACHE_BUST=12
 
-# 1. System deps
+# 1. System deps + Verilator
 RUN apt-get update && apt-get install -y \
-    iverilog \
-    curl \
+    verilator \
+    g++ \
+    make \
     git \
+    curl \
     wget \
-    python3 \
+    perl \
     && rm -rf /var/lib/apt/lists/*
+
+# Verify verilator version
+RUN verilator --version
 
 # 2. Node 20
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
@@ -19,40 +24,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 RUN node --version && npm --version
 
-# 3. Download UVM 1.1d
-RUN mkdir -p /uvm && \
-    wget -q https://www.accellera.org/images/downloads/standards/uvm/uvm-1.1d.tar.gz \
-         -O /tmp/uvm.tar.gz && \
-    tar -xzf /tmp/uvm.tar.gz -C /tmp && \
-    cp -r /tmp/uvm-1.1d/src /uvm/src && \
-    rm -rf /tmp/uvm.tar.gz /tmp/uvm-1.1d
+# 3. Install UVM for Verilator (uvm-systemc or generic UVM)
+#    Verilator ships with a built-in UVM package since v4.020
+RUN verilator --version | grep -oP '\d+\.\d+' | head -1
 
-# 4. Patch UVM for iverilog compatibility
-#    uvm_object_defines.svh uses 'type' parameter syntax iverilog doesn't support.
-#    We replace the problematic `uvm_field_utils_begin macro with an iverilog-safe version.
-RUN python3 - <<'EOF'
-import re, sys
-
-f = '/uvm/src/macros/uvm_object_defines.svh'
-with open(f) as fh:
-    src = fh.read()
-
-# Print lines 170-185 for debugging
-lines = src.split('\n')
-for i, l in enumerate(lines[169:185], 170):
-    print(f"{i}: {l}")
-
-# Common iverilog incompatibility: `type' used as parameter type
-# Replace `type T` with just removing the type keyword
-src = re.sub(r'\btype\s+([A-Za-z_][A-Za-z0-9_]*)\b', r'\1', src)
-
-with open(f, 'w') as fh:
-    fh.write(src)
-
-print("Patch applied OK")
-EOF
-
-# 5. App
 WORKDIR /app
 COPY package.json .
 RUN npm install
