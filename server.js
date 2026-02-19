@@ -12,14 +12,16 @@ const VERILATOR_VERSION = (() => {
   try { return execSync('verilator --version').toString().trim() } catch(e) { return 'not found' }
 })()
 
-// Find UVM files shipped with Verilator
+// UVM files copied from repo into /opt/uvm at build time
 const UVM_DIR = (() => {
+  const candidates = ['/opt/uvm', '/usr/local/share/verilator/include/uvm-1.0']
+  for (const d of candidates) {
+    if (fs.existsSync(`${d}/uvm_pkg.sv`)) return d
+  }
   try {
-    const r = execSync(
-      'find /usr/local/share/verilator /usr/share/verilator -name "uvm_pkg.sv" 2>/dev/null | head -1'
-    ).toString().trim()
-    return r ? path.dirname(r) : '/usr/local/share/verilator/include/uvm-1.0'
-  } catch(e) { return '/usr/local/share/verilator/include/uvm-1.0' }
+    const r = execSync('find /opt /usr/local -name "uvm_pkg.sv" 2>/dev/null | head -1').toString().trim()
+    return r ? path.dirname(r) : '/opt/uvm'
+  } catch(e) { return '/opt/uvm' }
 })()
 
 const UVM_PKG = `${UVM_DIR}/uvm_pkg.sv`
