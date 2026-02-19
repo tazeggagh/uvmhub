@@ -9,15 +9,15 @@ const app  = express()
 const PORT = process.env.PORT || 3001
 
 // ── UVM paths (chiggs/uvm → /uvm/distrib/src) ────────────────────────────────
-const UVM     = '/uvm/distrib/src'
-const UVM_PKG = '/uvm/distrib/src/uvm_pkg.sv'
+const UVM     = '/uvm/src'
+const UVM_PKG = '/uvm/src/uvm_pkg.sv'
 
 let UVM_MACRO = ''
 try {
-  UVM_MACRO = execSync('find /uvm/distrib -name "uvm_macros.svh" | head -1')
+  UVM_MACRO = execSync('find /uvm/src -name "uvm_macros.svh" | head -1')
     .toString().trim()
 } catch(e) {
-  UVM_MACRO = '/uvm/distrib/src/uvm_macros.svh'
+  UVM_MACRO = '/uvm/src/uvm_macros.svh'
 }
 
 const UVM_MACRO_DIR = UVM_MACRO ? path.dirname(UVM_MACRO) : UVM
