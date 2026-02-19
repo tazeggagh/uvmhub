@@ -9,6 +9,8 @@ const UVM       = '/uvm/src'
 const UVM_MACRO = '/uvm/src/macros/uvm_macros.svh'
 const UVM_PKG   = '/uvm/src/uvm_pkg.sv'
 
+console.log('UVM paths:', { UVM, UVM_MACRO, UVM_PKG })
+
 app.use(cors())
 app.use(express.json({ limit: '1mb' }))
 
@@ -87,19 +89,22 @@ function runSimulation(req, res) {
     svFiles.push(path)
   }
 
-  const ivCmd = [
-    'iverilog', '-g2012',
+  const ivArgs = [
+    'iverilog',
+    '-g2012',
     `-I${UVM}`,
     `-I${UVM}/macros`,
     `-I${UVM}/dpi`,
-    `-DUVM_NO_DPI`,
-    `-DUVM_REGEX_NO_DPI`,
+    '-DUVM_NO_DPI',
+    '-DUVM_REGEX_NO_DPI',
     '-o', vvpFile,
-    `-s ${top}`,
+    `-s`, top,
     ...svFiles,
-    UVM_MACRO,   // macros first
-    UVM_PKG      // pkg second
-  ].join(' ')
+    UVM_MACRO,
+    UVM_PKG
+  ]
+  const ivCmd = ivArgs.join(' ')
+  console.log('CMD:', ivCmd)  // log so we can see the exact command
 
   exec(ivCmd, { timeout: 30000 }, (err, _out, stderr) => {
     if (err) {
