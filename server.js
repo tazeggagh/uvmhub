@@ -1,3 +1,4 @@
+// UVM Simulator Backend v3
 const express  = require('express')
 const cors     = require('cors')
 const { exec } = require('child_process')
@@ -5,21 +6,31 @@ const fs       = require('fs')
 
 const app  = express()
 const PORT = process.env.PORT || 3001
+
+// UVM paths — accellera-official/uvm-core cloned to /uvm
 const UVM       = '/uvm/src'
 const UVM_MACRO = '/uvm/src/macros/uvm_macros.svh'
 const UVM_PKG   = '/uvm/src/uvm_pkg.sv'
 
-console.log('UVM paths:', { UVM, UVM_MACRO, UVM_PKG })
+console.log('UVM_MACRO exists:', fs.existsSync(UVM_MACRO))
+console.log('UVM_PKG   exists:', fs.existsSync(UVM_PKG))
 
 app.use(cors())
 app.use(express.json({ limit: '1mb' }))
 
-// ── Inline UUID — zero dependencies ──────────────────────────────────────────
+// ── Inline UUID ───────────────────────────────────────────────────────────────
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
 }
 
-// ── VCD Parser ───────────────────────────────────────────────────────────────
+// ── Strip UVM boilerplate users might include ─────────────────────────────────
+function processCode(c) {
+  return c
+    .replace(/^\s*import\s+uvm_pkg\s*::\s*\*\s*;\s*$/gm, '')
+    .replace(/^\s*`include\s+"uvm_macros\.svh"\s*$/gm, '')
+}
+
+// ── VCD Parser ────────────────────────────────────────────────────────────────
 function parseVCD(vcdPath) {
   if (!fs.existsSync(vcdPath)) return null
   const lines   = fs.readFileSync(vcdPath, 'utf8').split('\n')
@@ -37,7 +48,6 @@ function parseVCD(vcdPath) {
     if (t === '$enddefinitions $end') { inDefs = false; continue }
     if (inDefs) continue
     if (t.startsWith('#')) { time = parseInt(t.slice(1)); continue }
-
     const scalar = t.match(/^([01xz])(\S+)$/)
     if (scalar) {
       const name = idMap[scalar[2]]
@@ -56,9 +66,6 @@ function parseVCD(vcdPath) {
 // ── Core simulation ───────────────────────────────────────────────────────────
 function runSimulation(req, res) {
   const { code, files, top = 'tb_top' } = req.body
-
-  // Support both single `code` string and multi-file `files` array
-  // files: [{ name: 'counter.sv', code: '...' }, { name: 'tb_top.sv', code: '...' }]
   if (!code && !files?.length)
     return res.status(400).json({ error: 'No code provided' })
 
@@ -68,28 +75,20 @@ function runSimulation(req, res) {
 
   fs.mkdirSync(dir, { recursive: true })
 
-  // Strip uvm_pkg import and uvm_macros include from user code
-  // — the backend adds these explicitly in the correct order
-  const cleanCode = (files?.length ? null : code)
-  const processCode = c => c
-    .replace(/^\s*import\s+uvm_pkg\s*::\s*\*\s*;\s*$/gm, '')
-    .replace(/^\s*`include\s+"uvm_macros\.svh"\s*$/gm, '')
-
-  // Write all files to the temp dir
   let svFiles = []
   if (files?.length) {
     for (const f of files) {
-      const path = `${dir}/${f.name}`
-      fs.writeFileSync(path, processCode(f.code))
-      svFiles.push(path)
+      const p = `${dir}/${f.name}`
+      fs.writeFileSync(p, processCode(f.code))
+      svFiles.push(p)
     }
   } else {
-    const path = `${dir}/design.sv`
-    fs.writeFileSync(path, processCode(code))
-    svFiles.push(path)
+    const p = `${dir}/design.sv`
+    fs.writeFileSync(p, processCode(code))
+    svFiles.push(p)
   }
 
-  const ivArgs = [
+  const cmd = [
     'iverilog',
     '-g2012',
     `-I${UVM}`,
@@ -98,20 +97,19 @@ function runSimulation(req, res) {
     '-DUVM_NO_DPI',
     '-DUVM_REGEX_NO_DPI',
     '-o', vvpFile,
-    `-s`, top,
+    '-s', top,
     ...svFiles,
     UVM_MACRO,
     UVM_PKG
-  ]
-  const ivCmd = ivArgs.join(' ')
-  console.log('CMD:', ivCmd)  // log so we can see the exact command
+  ].join(' ')
 
-  exec(ivCmd, { timeout: 30000 }, (err, _out, stderr) => {
+  console.log('CMD:', cmd)
+
+  exec(cmd, { timeout: 30000 }, (err, _out, stderr) => {
     if (err) {
       fs.rmSync(dir, { recursive: true, force: true })
       return res.json({ success: false, stage: 'compile', errors: stderr || err.message })
     }
-
     exec(`vvp ${vvpFile} 2>&1`, { timeout: 60000, cwd: dir }, (err2, simOut) => {
       const signals = parseVCD(vcdFile)
       fs.rmSync(dir, { recursive: true, force: true })
@@ -129,7 +127,7 @@ function runSimulation(req, res) {
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.post('/api/simulator/run', runSimulation)
 app.post('/compile',           runSimulation)
-app.get('/health',             (_, res) => res.json({ status: 'ok', node: process.version }))
-app.get('/api/health',         (_, res) => res.json({ status: 'ok', node: process.version }))
+app.get('/health',             (_, res) => res.json({ status: 'ok', node: process.version, uvm_macro: fs.existsSync(UVM_MACRO), uvm_pkg: fs.existsSync(UVM_PKG) }))
+app.get('/api/health',         (_, res) => res.json({ status: 'ok', node: process.version, uvm_macro: fs.existsSync(UVM_MACRO), uvm_pkg: fs.existsSync(UVM_PKG) }))
 
-app.listen(PORT, () => console.log(`Simulator API on :${PORT}  node ${process.version}`))
+app.listen(PORT, () => console.log(`UVM Simulator Backend v3 on :${PORT}  node ${process.version}`))
