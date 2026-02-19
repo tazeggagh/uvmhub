@@ -1,12 +1,12 @@
-// UVM Simulator Backend v10 — Verilator (modern) + UVM-lite 2017
+// UVM Simulator Backend v11 — Verilator + UVM-lite + VCD output
 
 const express = require('express')
-const cors = require('cors')
+const cors    = require('cors')
 const { exec, execSync } = require('child_process')
-const fs = require('fs')
+const fs   = require('fs')
 const path = require('path')
 
-const app = express()
+const app  = express()
 const PORT = process.env.PORT || 3001
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -22,7 +22,7 @@ const Z3_VERSION = (() => {
   catch { return 'not found' }
 })()
 
-console.log(`Backend v10 | ${VERILATOR_VERSION}`)
+console.log(`Backend v11 | ${VERILATOR_VERSION}`)
 console.log(`Z3: ${Z3_VERSION}`)
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -43,11 +43,10 @@ const UVM_DIR = (() => {
 })()
 
 const UVM_PKG = `${UVM_DIR}/uvm_pkg.sv`
-
 console.log(`UVM dir: ${UVM_DIR} | uvm_pkg.sv exists: ${fs.existsSync(UVM_PKG)}`)
 
 app.use(cors())
-app.use(express.json({ limit: '1mb' }))
+app.use(express.json({ limit: '2mb' }))
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Utils
@@ -83,57 +82,59 @@ function processCode(code, isUVM = false) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VCD parser
+// VCD parser  →  { [sigName]: { width, values: [{time, val}] } }
 // ─────────────────────────────────────────────────────────────────────────────
 function parseVCD(vcdPath) {
   if (!fs.existsSync(vcdPath)) return null
 
-  const lines = fs.readFileSync(vcdPath, 'utf8').split('\n')
-  const signals = {}
-  const idMap = {}
+  const lines   = fs.readFileSync(vcdPath, 'utf8').split('\n')
+  const signals = {}   // sigName → { width, values }
+  const idMap   = {}   // vcd-id  → sigName
 
-  let time = 0
-  let inDefs = true
+  let time    = 0
+  let inDefs  = true
 
   for (const line of lines) {
     const t = line.trim()
 
+    // signal declaration
     if (t.startsWith('$var')) {
       const m = t.match(/\$var\s+\S+\s+(\d+)\s+(\S+)\s+(\S+)/)
       if (m) {
-        idMap[m[2]] = m[3]
-        signals[m[3]] = { width: +m[1], values: [] }
+        const [, width, id, name] = m
+        idMap[id]      = name
+        signals[name]  = { width: +width, values: [] }
       }
       continue
     }
 
-    if (t === '$enddefinitions $end') {
-      inDefs = false
-      continue
-    }
-
+    if (t === '$enddefinitions $end') { inDefs = false; continue }
     if (inDefs) continue
 
-    if (t.startsWith('#')) {
-      time = parseInt(t.slice(1))
-      continue
-    }
+    // timestamp
+    if (t.startsWith('#')) { time = parseInt(t.slice(1)); continue }
 
-    const sc = t.match(/^([01xz])(\S+)$/)
+    // scalar:  0a  1b  xa
+    const sc = t.match(/^([01xzXZ])(\S+)$/)
     if (sc) {
-      const n = idMap[sc[2]]
-      if (n && signals[n]) signals[n].values.push({ time, val: sc[1] })
+      const name = idMap[sc[2]]
+      if (name && signals[name]) signals[name].values.push({ time, val: sc[1] })
       continue
     }
 
-    const vc = t.match(/^b([01xz]+)\s+(\S+)$/)
+    // vector:  b00001010 a
+    const vc = t.match(/^b([01xzXZ]+)\s+(\S+)$/)
     if (vc) {
-      const n = idMap[vc[2]]
-      if (n && signals[n]) signals[n].values.push({ time, val: vc[1] })
+      const name = idMap[vc[2]]
+      if (name && signals[name]) signals[name].values.push({ time, val: vc[1] })
     }
   }
 
-  return signals
+  // Remove signals with no transitions (noise)
+  for (const k of Object.keys(signals))
+    if (!signals[k].values.length) delete signals[k]
+
+  return Object.keys(signals).length ? signals : null
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -152,7 +153,7 @@ function usesUVM(svFiles) {
 function hasClkPort(svFiles) {
   for (const f of svFiles) {
     const src = fs.readFileSync(f, 'utf8')
-    if (/input\s+(?:logic\s+)?clk\b/.test(src)) return true
+    if (/module\s+tb_top\s*\([^)]*input\s+(?:logic\s+)?clk/.test(src)) return true
   }
   return false
 }
@@ -161,30 +162,27 @@ function hasClkPort(svFiles) {
 // C++ harness
 // ─────────────────────────────────────────────────────────────────────────────
 function makeMain(top, driveClk) {
-  const clkLine = driveClk
-    ? `dut->clk = (t % 10) >= 5 ? 1 : 0;`
-    : `// self-clocking design`
-
   return `#include "V${top}.h"
 #include "verilated.h"
 #include "verilated_vcd_c.h"
+#include <cstdint>
 
 int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
     V${top}* dut = new V${top};
+
     Verilated::traceEverOn(true);
     VerilatedVcdC* vcd = new VerilatedVcdC;
     dut->trace(vcd, 99);
     vcd->open("dump.vcd");
 
     uint64_t t = 0;
-
     dut->eval();
     vcd->dump(t);
 
     while (!Verilated::gotFinish() && t < 1000000) {
         t++;
-        ${clkLine}
+        ${driveClk ? 'dut->clk = (t % 10) >= 5 ? 1 : 0;' : '// self-clocking'}
         dut->eval();
         vcd->dump(t);
     }
@@ -204,20 +202,18 @@ int main(int argc, char** argv) {
 function runSimulation(req, res) {
   const { code, files, top = 'tb_top' } = req.body
 
-  if (!code && !files?.length) {
+  if (!code && !files?.length)
     return res.status(400).json({ error: 'No code provided' })
-  }
 
-  const dir = `/tmp/sim_${uid()}`
+  const dir    = `/tmp/sim_${uid()}`
   const objDir = `${dir}/obj`
   const simBin = `${objDir}/V${top}`
   const vcdFile = `${dir}/dump.vcd`
 
   fs.mkdirSync(objDir, { recursive: true })
 
-  // write files
+  // ── Write source files ────────────────────────────────────────────────────
   let svFiles = []
-
   if (files?.length) {
     for (const f of files) {
       const p = `${dir}/${f.name}`
@@ -230,43 +226,34 @@ function runSimulation(req, res) {
     svFiles.push(p)
   }
 
-  const isUVM = usesUVM(svFiles)
+  const isUVM    = usesUVM(svFiles)
   const driveClk = hasClkPort(svFiles)
-
   console.log(`isUVM=${isUVM} driveClk=${driveClk}`)
 
-  // rewrite processed
-  for (const p of svFiles) {
+  // Rewrite with UVM preamble / cleanup
+  for (const p of svFiles)
     fs.writeFileSync(p, processCode(fs.readFileSync(p, 'utf8'), isUVM))
-  }
 
+  // ── Write C++ harness ─────────────────────────────────────────────────────
   const mainFile = `${dir}/main.cpp`
   fs.writeFileSync(mainFile, makeMain(top, driveClk))
 
   const uvmSvFiles = isUVM && fs.existsSync(UVM_PKG) ? [UVM_PKG] : []
 
-  const uvmFlags = isUVM
-    ? [
-        '--timing',
-        '--assert',
-        '--trace-fst',
+  const uvmFlags = isUVM ? [
+    '--timing', '--assert',
+    `+incdir+${UVM_DIR}`,
+    `+incdir+${UVM_DIR}/macros`,
+    `-I${UVM_DIR}`,
+    '+define+UVM_NO_DPI',
+    '+define+UVM_REGEX_NO_DPI',
+    '+define+UVM_OBJECT_MUST_HAVE_CONSTRUCTOR',
+    '+define+UVM_NO_DEPRECATED',
+    '-Wno-UNOPTFLAT', '-Wno-MULTIDRIVEN',
+    '-Wno-TIMESCALEMOD', '-Wno-DEFOVERRIDE',
+  ] : []
 
-        `+incdir+${UVM_DIR}`,
-        `+incdir+${UVM_DIR}/macros`,
-        `-I${UVM_DIR}`,
-
-        '+define+UVM_NO_DPI',
-        '+define+UVM_REGEX_NO_DPI',
-        '+define+UVM_OBJECT_MUST_HAVE_CONSTRUCTOR',
-        '+define+UVM_NO_DEPRECATED',
-
-        '-Wno-UNOPTFLAT',
-        '-Wno-MULTIDRIVEN',
-        '-Wno-TIMESCALEMOD',
-        '-Wno-DEFOVERRIDE',
-      ]
-    : []
-
+  // ── Verilate ──────────────────────────────────────────────────────────────
   const vlCmd = [
     'verilator', '--cc', '--sv', '--trace',
     '--exe', mainFile,
@@ -275,7 +262,7 @@ function runSimulation(req, res) {
     `--top-module ${top}`,
     ...uvmFlags,
     ...uvmSvFiles,
-    ...svFiles
+    ...svFiles,
   ].join(' ')
 
   console.log('VERILATE:', vlCmd)
@@ -286,6 +273,7 @@ function runSimulation(req, res) {
       return res.json({ success: false, stage: 'compile', errors: stderr || e1.message })
     }
 
+    // ── Build ───────────────────────────────────────────────────────────────
     const makeCmd = `make -C ${objDir} -f V${top}.mk V${top} -j$(nproc)`
     exec(makeCmd, { timeout: 120000 }, (e2, _o2, makeErr) => {
       if (e2) {
@@ -293,18 +281,30 @@ function runSimulation(req, res) {
         return res.json({ success: false, stage: 'build', errors: makeErr || e2.message })
       }
 
+      // ── Simulate ─────────────────────────────────────────────────────────
       exec(simBin, { timeout: 60000, cwd: dir }, (e3, simOut, simErr) => {
-        const output = (simOut || '') + (simErr || '')
+        const output  = (simOut || '') + (simErr || '')
         const signals = parseVCD(vcdFile)
+
+        // ── Read raw VCD for GTKWave download ─────────────────────────────
+        let vcd = null
+        if (fs.existsSync(vcdFile)) {
+          const stat = fs.statSync(vcdFile)
+          // Only return VCD if it's under 4 MB — larger files should be
+          // streamed via a separate endpoint
+          if (stat.size < 4 * 1024 * 1024)
+            vcd = fs.readFileSync(vcdFile, 'utf8')
+        }
 
         fs.rmSync(dir, { recursive: true, force: true })
 
         res.json({
           success: !e3 || output.includes('$finish'),
-          stage: 'done',
-          errors: e3 && !output.includes('$finish') ? output : null,
-          output: output.slice(0, 8000),
-          signals
+          stage:   'done',
+          errors:  e3 && !output.includes('$finish') ? output : null,
+          output:  output.slice(0, 8000),
+          signals,   // parsed signal map for in-browser WaveformViewer
+          vcd,       // raw VCD string for GTKWave download (null if >4 MB)
         })
       })
     })
@@ -315,30 +315,24 @@ function runSimulation(req, res) {
 // Routes
 // ─────────────────────────────────────────────────────────────────────────────
 app.post('/api/simulator/run', runSimulation)
-app.post('/compile', runSimulation)
+app.post('/compile',           runSimulation)
 
-app.get('/health', (_, res) => res.json({
-  status: 'ok',
-  version: 'v10',
-  node: process.version,
-  verilator: VERILATOR_VERSION,
-  z3: Z3_VERSION,
-  uvm_support: 'lite-2017',
-  uvm_dir: UVM_DIR,
-  uvm_pkg_exists: fs.existsSync(UVM_PKG)
-}))
+app.get('/health',     healthHandler)
+app.get('/api/health', healthHandler)
 
-app.get('/api/health', (_, res) => res.json({
-  status: 'ok',
-  version: 'v10',
-  node: process.version,
-  verilator: VERILATOR_VERSION,
-  z3: Z3_VERSION,
-  uvm_support: 'lite-2017',
-  uvm_dir: UVM_DIR,
-  uvm_pkg_exists: fs.existsSync(UVM_PKG)
-}))
+function healthHandler(_, res) {
+  res.json({
+    status:          'ok',
+    version:         'v11',
+    node:            process.version,
+    verilator:       VERILATOR_VERSION,
+    z3:              Z3_VERSION,
+    uvm_support:     'lite-2017',
+    uvm_dir:         UVM_DIR,
+    uvm_pkg_exists:  fs.existsSync(UVM_PKG),
+  })
+}
 
 app.listen(PORT, () =>
-  console.log(`Backend v10 on :${PORT} | ${VERILATOR_VERSION}`)
+  console.log(`Backend v11 on :${PORT} | ${VERILATOR_VERSION}`)
 )
