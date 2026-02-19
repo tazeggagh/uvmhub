@@ -69,23 +69,30 @@ function makeMain(top) {
 
 int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
-    V${top}* top = new V${top};
+    V${top}* dut = new V${top};
 
-    VerilatedVcdC* vcd = new VerilatedVcdC;
     Verilated::traceEverOn(true);
-    top->trace(vcd, 99);
+    VerilatedVcdC* vcd = new VerilatedVcdC;
+    dut->trace(vcd, 99);
     vcd->open("dump.vcd");
 
     vluint64_t t = 0;
+    // Drive clock: toggle every 5 time units (10 unit period)
     while (!Verilated::gotFinish() && t < 100000) {
-        top->eval();
+        // Toggle clock if port exists
+        #ifdef VM_TRACE
+        #endif
+        if (t % 5 == 0) {
+            dut->clk = !dut->clk;
+        }
+        dut->eval();
         vcd->dump(t);
         t++;
     }
 
     vcd->close();
-    top->final();
-    delete top;
+    dut->final();
+    delete dut;
     return 0;
 }
 `
