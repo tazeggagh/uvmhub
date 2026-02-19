@@ -5,7 +5,9 @@ const fs       = require('fs')
 
 const app  = express()
 const PORT = process.env.PORT || 3001
-const UVM = '/uvm/src'
+const UVM       = '/uvm/src'
+const UVM_MACRO = '/uvm/src/macros/uvm_macros.svh'
+const UVM_PKG   = '/uvm/src/uvm_pkg.sv'
 
 app.use(cors())
 app.use(express.json({ limit: '1mb' }))
@@ -87,16 +89,16 @@ function runSimulation(req, res) {
 
   const ivCmd = [
     'iverilog', '-g2012',
-    `-I${UVM}`,                  // main src path
-    `-I${UVM}/macros`,           // macros subfolder
-    `-I${UVM}/dpi`,              // dpi subfolder (needed by some includes)
-    `-DUVM_NO_DPI`,              // skip DPI implementation
-    `-DUVM_REGEX_NO_DPI`,        // skip regex DPI
+    `-I${UVM}`,
+    `-I${UVM}/macros`,
+    `-I${UVM}/dpi`,
+    `-DUVM_NO_DPI`,
+    `-DUVM_REGEX_NO_DPI`,
     '-o', vvpFile,
     `-s ${top}`,
     ...svFiles,
-    `${UVM}/uvm_macros.svh`,     // macros FIRST before pkg
-    `${UVM}/uvm_pkg.sv`          // pkg AFTER macros
+    UVM_MACRO,   // macros first
+    UVM_PKG      // pkg second
   ].join(' ')
 
   exec(ivCmd, { timeout: 30000 }, (err, _out, stderr) => {
