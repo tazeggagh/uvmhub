@@ -18,14 +18,14 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 RUN node --version && npm --version
 
-# 3. Download UVM 1.1d — known to work with iverilog
+# 3. Download UVM 1.1d and patch uvm_object_defines.svh for iverilog
 RUN mkdir -p /uvm && \
     wget -q https://www.accellera.org/images/downloads/standards/uvm/uvm-1.1d.tar.gz -O /tmp/uvm.tar.gz && \
     tar -xzf /tmp/uvm.tar.gz -C /tmp && \
     cp -r /tmp/uvm-1.1d/src /uvm/src && \
     rm -rf /tmp/uvm.tar.gz /tmp/uvm-1.1d && \
-    find /uvm -name "uvm_pkg.sv" && \
-    find /uvm -name "uvm_macros.svh"
+    echo "--- Line 174-180 of uvm_object_defines.svh ---" && \
+    sed -n '172,182p' /uvm/src/macros/uvm_object_defines.svh
 
 WORKDIR /app
 COPY package.json .
