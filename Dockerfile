@@ -1,21 +1,27 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CACHE_BUST=12
+ENV CACHE_BUST=14
 
-# 1. System deps + Verilator
+# 1. System deps
 RUN apt-get update && apt-get install -y \
-    verilator \
-    g++ \
-    make \
     git \
     curl \
     wget \
+    make \
+    autoconf \
+    automake \
+    flex \
+    bison \
+    g++ \
+    libfl2 \
+    libfl-dev \
+    zlib1g \
+    zlib1g-dev \
     perl \
+    python3 \
+    ccache \
     && rm -rf /var/lib/apt/lists/*
-
-# Verify verilator version
-RUN verilator --version
 
 # 2. Node 20
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
@@ -24,9 +30,24 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 RUN node --version && npm --version
 
-# 3. Install UVM for Verilator (uvm-systemc or generic UVM)
-#    Verilator ships with a built-in UVM package since v4.020
-RUN verilator --version | grep -oP '\d+\.\d+' | head -1
+# 3. Build Verilator 5.x from source
+#    v5.020 is stable and has full --uvm support
+RUN git clone --depth=1 --branch v5.020 \
+        https://github.com/verilator/verilator.git /verilator-src \
+    && cd /verilator-src \
+    && autoconf \
+    && ./configure \
+    && make -j$(nproc) \
+    && make install \
+    && cd / && rm -rf /verilator-src
+
+# Verify version
+RUN verilator --version
+
+# 4. Find UVM package that ships with Verilator 5
+RUN find /usr/local/share/verilator -name "uvm_pkg.sv" 2>/dev/null || \
+    find /usr/share/verilator -name "uvm_pkg.sv" 2>/dev/null || \
+    echo "UVM not found in default paths"
 
 WORKDIR /app
 COPY package.json .
