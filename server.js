@@ -1,4 +1,4 @@
-// UVM Simulator Backend v6 — Verilator
+// UVM Simulator Backend v7 — Verilator 5 + UVM
 const express    = require('express')
 const cors       = require('cors')
 const { exec, execSync } = require('child_process')
@@ -11,7 +11,19 @@ const PORT = process.env.PORT || 3001
 const VERILATOR_VERSION = (() => {
   try { return execSync('verilator --version').toString().trim() } catch(e) { return 'not found' }
 })()
-console.log('Backend v6 starting. Verilator:', VERILATOR_VERSION)
+
+// Find UVM pkg shipped with Verilator 5
+const UVM_PKG = (() => {
+  try {
+    const r = execSync('find /usr/local/share/verilator /usr/share/verilator -name "uvm_pkg.sv" 2>/dev/null | head -1').toString().trim()
+    return r || ''
+  } catch(e) { return '' }
+})()
+
+const UVM_DIR = UVM_PKG ? path.dirname(UVM_PKG) : ''
+
+console.log(`Backend v7 | ${VERILATOR_VERSION}`)
+console.log(`UVM pkg: ${UVM_PKG || 'not found'} → exists: ${fs.existsSync(UVM_PKG)}`)
 
 app.use(cors())
 app.use(express.json({ limit: '1mb' }))
@@ -50,8 +62,16 @@ function parseVCD(vcdPath) {
   return signals
 }
 
-// ── C++ main — drives clk, includes sc_time_stamp ────────────────────────────
-// Check if top module has a clk port by scanning the SV source
+// ── Detect if design uses UVM ─────────────────────────────────────────────────
+function usesUVM(svFiles) {
+  for (const f of svFiles) {
+    const src = fs.readFileSync(f, 'utf8')
+    if (/uvm_(test|component|sequence|driver|monitor|scoreboard|env|agent)\b/.test(src)) return true
+    if (/`uvm_(component|object)_utils/.test(src)) return true
+  }
+  return false
+}
+
 function hasClkPort(svFiles) {
   for (const f of svFiles) {
     const src = fs.readFileSync(f, 'utf8')
@@ -60,10 +80,11 @@ function hasClkPort(svFiles) {
   return false
 }
 
+// ── C++ main ──────────────────────────────────────────────────────────────────
 function makeMain(top, driveClk) {
   const clkLine = driveClk
     ? `dut->clk = (t % 10) >= 5 ? 1 : 0;`
-    : `// no clk port — design drives its own clock`
+    : `// self-clocking design`
   return `#include "V${top}.h"
 #include "verilated.h"
 #include "verilated_vcd_c.h"
@@ -73,14 +94,11 @@ double sc_time_stamp() { return 0; }
 int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
     V${top}* dut = new V${top};
-
     Verilated::traceEverOn(true);
     VerilatedVcdC* vcd = new VerilatedVcdC;
     dut->trace(vcd, 99);
     vcd->open("dump.vcd");
-
     dut->eval();
-
     vluint64_t t = 0;
     while (!Verilated::gotFinish() && t < 1000000) {
         ${clkLine}
@@ -88,11 +106,9 @@ int main(int argc, char** argv) {
         vcd->dump(t);
         t++;
     }
-
     vcd->close();
     dut->final();
-    delete vcd;
-    delete dut;
+    delete vcd; delete dut;
     return 0;
 }
 `
@@ -124,40 +140,46 @@ function runSimulation(req, res) {
     svFiles.push(p)
   }
 
+  const isUVM    = usesUVM(svFiles)
   const driveClk = hasClkPort(svFiles)
+
+  console.log(`isUVM=${isUVM} driveClk=${driveClk}`)
+
   const mainFile = `${dir}/main.cpp`
   fs.writeFileSync(mainFile, makeMain(top, driveClk))
-  console.log('driveClk:', driveClk)
 
-  // Step 1: verilate
+  // Build verilator command
+  const uvmFlags = isUVM && UVM_PKG
+    ? [`--uvm`, `-I${UVM_DIR}`]
+    : isUVM
+      ? [`+define+UVM_NO_DPI`, `-I${UVM_DIR || '/usr/local/share/verilator/include/uvm-1.0'}`]
+      : []
+
   const vlCmd = [
     'verilator', '--cc', '--sv', '--trace',
     '--exe', mainFile,
     '-Wno-fatal', '-Wno-lint', '-Wno-style',
     `--Mdir ${objDir}`,
     `--top-module ${top}`,
+    ...uvmFlags,
     ...svFiles
   ].join(' ')
 
   console.log('VERILATE:', vlCmd)
 
-  exec(vlCmd, { timeout: 30000, cwd: dir }, (e1, _o, stderr) => {
+  exec(vlCmd, { timeout: 60000, cwd: dir }, (e1, _o, stderr) => {
     if (e1) {
       fs.rmSync(dir, { recursive: true, force: true })
       return res.json({ success: false, stage: 'compile', errors: stderr || e1.message })
     }
 
-    // Step 2: make
-    const makeCmd = `make -C ${objDir} -f V${top}.mk V${top} -j2`
-    console.log('MAKE:', makeCmd)
-
-    exec(makeCmd, { timeout: 60000 }, (e2, _o2, makeErr) => {
+    const makeCmd = `make -C ${objDir} -f V${top}.mk V${top} -j$(nproc)`
+    exec(makeCmd, { timeout: 120000 }, (e2, _o2, makeErr) => {
       if (e2) {
         fs.rmSync(dir, { recursive: true, force: true })
         return res.json({ success: false, stage: 'build', errors: makeErr || e2.message })
       }
 
-      // Step 3: run
       exec(simBin, { timeout: 60000, cwd: dir }, (e3, simOut, simErr) => {
         const output  = (simOut || '') + (simErr || '')
         const signals = parseVCD(vcdFile)
@@ -165,7 +187,7 @@ function runSimulation(req, res) {
         res.json({
           success: !e3 || output.includes('$finish'),
           stage:   'done',
-          errors:  e3 ? output : null,
+          errors:  e3 && !output.includes('$finish') ? output : null,
           output:  output.slice(0, 8000),
           signals
         })
@@ -177,7 +199,19 @@ function runSimulation(req, res) {
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.post('/api/simulator/run', runSimulation)
 app.post('/compile',           runSimulation)
-app.get('/health',     (_, res) => res.json({ status: 'ok', version: 'v6', node: process.version, verilator: VERILATOR_VERSION }))
-app.get('/api/health', (_, res) => res.json({ status: 'ok', version: 'v6', node: process.version, verilator: VERILATOR_VERSION }))
+app.get('/health', (_, res) => res.json({
+  status: 'ok', version: 'v7',
+  node: process.version,
+  verilator: VERILATOR_VERSION,
+  uvm_pkg: UVM_PKG,
+  uvm_exists: fs.existsSync(UVM_PKG)
+}))
+app.get('/api/health', (_, res) => res.json({
+  status: 'ok', version: 'v7',
+  node: process.version,
+  verilator: VERILATOR_VERSION,
+  uvm_pkg: UVM_PKG,
+  uvm_exists: fs.existsSync(UVM_PKG)
+}))
 
-app.listen(PORT, () => console.log(`Backend v6 on :${PORT}  node ${process.version}  ${VERILATOR_VERSION}`))
+app.listen(PORT, () => console.log(`Backend v7 on :${PORT} | ${VERILATOR_VERSION}`))
