@@ -185,6 +185,7 @@ function runSimulation(req, res) {
   const uvmSvFiles = isUVM && fs.existsSync(UVM_PKG) ? [UVM_PKG] : []
   const uvmFlags = isUVM
     ? [
+        '--timing',
         `+incdir+${UVM_DIR}`,
         `+incdir+${UVM_DIR}/macros`,
         `-I${UVM_DIR}`,
@@ -193,6 +194,8 @@ function runSimulation(req, res) {
         '+define+UVM_NO_DEPRECATED',
         '-Wno-UNOPTFLAT',
         '-Wno-MULTIDRIVEN',
+        '-Wno-TIMESCALEMOD',
+        '-Wno-DEFOVERRIDE',
       ]
     : []
 
