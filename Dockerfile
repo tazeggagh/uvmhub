@@ -27,8 +27,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 # ── 4. Verify + locate UVM ───────────────────────────────────────────────────
 RUN verilator --version && node --version && npm --version
-RUN find /usr/local/share/verilator -name "uvm_pkg.sv" 2>/dev/null || echo "uvm_pkg.sv not found"
-RUN find /usr/local/share/verilator -name "uvm_macros.svh" 2>/dev/null || echo "uvm_macros.svh not found"
+RUN echo "=== UVM file search ===" && \
+    find / -name "uvm_pkg.sv" 2>/dev/null || echo "uvm_pkg.sv NOT FOUND ANYWHERE" && \
+    find / -name "uvm_macros.svh" 2>/dev/null || echo "uvm_macros.svh NOT FOUND ANYWHERE" && \
+    echo "=== Verilator share dir ===" && \
+    find /usr/local/share/verilator -type d | head -30
 
 # ── 5. App ────────────────────────────────────────────────────────────────────
 WORKDIR /app
