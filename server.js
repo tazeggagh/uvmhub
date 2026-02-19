@@ -186,10 +186,13 @@ function runSimulation(req, res) {
   const uvmFlags = isUVM
     ? [
         `+incdir+${UVM_DIR}`,
+        `+incdir+${UVM_DIR}/macros`,
         `-I${UVM_DIR}`,
         '+define+UVM_NO_DPI',
         '+define+UVM_REGEX_NO_DPI',
+        '+define+UVM_NO_DEPRECATED',
         '-Wno-UNOPTFLAT',
+        '-Wno-MULTIDRIVEN',
       ]
     : []
 
