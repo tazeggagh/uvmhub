@@ -67,6 +67,9 @@ function makeMain(top) {
 #include "verilated.h"
 #include "verilated_vcd_c.h"
 
+// Required by Verilator when using --trace
+double sc_time_stamp() { return 0; }
+
 int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
     V${top}* dut = new V${top};
@@ -77,11 +80,7 @@ int main(int argc, char** argv) {
     vcd->open("dump.vcd");
 
     vluint64_t t = 0;
-    // Drive clock: toggle every 5 time units (10 unit period)
     while (!Verilated::gotFinish() && t < 100000) {
-        // Toggle clock if port exists
-        #ifdef VM_TRACE
-        #endif
         if (t % 5 == 0) {
             dut->clk = !dut->clk;
         }
