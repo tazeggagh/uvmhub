@@ -22,10 +22,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 # 3. Verify Node
 RUN node --version && npm --version
 
-# 4. Clone UVM 1.2 into /uvm and verify key files exist
-RUN git clone --depth=1 https://github.com/chiggs/uvm.git /uvm \
-    && ls /uvm/src/uvm_pkg.sv \
-    && ls /uvm/src/macros/uvm_macros.svh
+# 4. Clone UVM 1.2 from official Accellera repo and show structure
+RUN git clone --depth=1 https://github.com/accellera-official/uvm-core.git /uvm \
+    && find /uvm -name "*.sv" | head -20 \
+    && find /uvm -name "*.svh" | head -20
 
 # 5. App
 WORKDIR /app
