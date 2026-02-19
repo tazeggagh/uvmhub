@@ -1,7 +1,7 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CACHE_BUST=8
+ENV CACHE_BUST=9
 
 # 1. System deps
 RUN apt-get update && apt-get install -y \
@@ -17,14 +17,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 RUN node --version && npm --version
 
-# 3. Clone UVM and print exact locations of both key files
-RUN git clone --depth=1 https://github.com/accellera-official/uvm-core.git /uvm \
+# 3. Clone chiggs/uvm — patched specifically for iverilog compatibility
+RUN git clone --depth=1 https://github.com/chiggs/uvm.git /uvm \
     && find /uvm -name "uvm_pkg.sv" \
     && find /uvm -name "uvm_macros.svh"
 
 WORKDIR /app
-
-# 4. App
 COPY package.json .
 RUN npm install
 COPY server.js .
