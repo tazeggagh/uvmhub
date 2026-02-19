@@ -21,7 +21,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 RUN node --version && npm --version
 
-WORKDIR /app
+# 5. Debug — show exact UVM file locations
+RUN find /uvm -name "uvm_macros.svh" && find /uvm -name "uvm_pkg.sv"
 
 # 3. Copy UVM from repo (uvm/ folder must exist in your repo)
 COPY uvm/ /uvm/
