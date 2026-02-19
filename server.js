@@ -1,4 +1,4 @@
-// UVM Simulator Backend v8 — Verilator 5 + UVM
+// UVM Simulator Backend v9 — Latest Verilator + UVM
 const express    = require('express')
 const cors       = require('cors')
 const { exec, execSync } = require('child_process')
@@ -12,18 +12,20 @@ const VERILATOR_VERSION = (() => {
   try { return execSync('verilator --version').toString().trim() } catch(e) { return 'not found' }
 })()
 
-// Find UVM pkg shipped with Verilator 5
-const UVM_PKG = (() => {
+// Find UVM files shipped with Verilator
+const UVM_DIR = (() => {
   try {
-    const r = execSync('find /usr/local/share/verilator /usr/share/verilator -name "uvm_pkg.sv" 2>/dev/null | head -1').toString().trim()
-    return r || ''
-  } catch(e) { return '' }
+    const r = execSync(
+      'find /usr/local/share/verilator /usr/share/verilator -name "uvm_pkg.sv" 2>/dev/null | head -1'
+    ).toString().trim()
+    return r ? path.dirname(r) : '/usr/local/share/verilator/include/uvm-1.0'
+  } catch(e) { return '/usr/local/share/verilator/include/uvm-1.0' }
 })()
 
-const UVM_DIR = UVM_PKG ? path.dirname(UVM_PKG) : ''
+const UVM_PKG = `${UVM_DIR}/uvm_pkg.sv`
 
-console.log(`Backend v8 | ${VERILATOR_VERSION}`)
-console.log(`UVM pkg: ${UVM_PKG || 'not found'} → exists: ${fs.existsSync(UVM_PKG)}`)
+console.log(`Backend v9 | ${VERILATOR_VERSION}`)
+console.log(`UVM dir: ${UVM_DIR} | uvm_pkg.sv exists: ${fs.existsSync(UVM_PKG)}`)
 
 app.use(cors())
 app.use(express.json({ limit: '1mb' }))
@@ -33,21 +35,22 @@ function uid() {
 }
 
 function processCode(c, isUVM = false) {
-  // Strip SV-side VCD calls — C++ harness owns tracing
+  // Always strip SV-side VCD calls — C++ harness owns tracing
   let out = c
     .replace(/^\s*\$dumpfile\s*\([^)]*\)\s*;\s*$/gm, '// $dumpfile removed by backend')
     .replace(/^\s*\$dumpvars\s*\([^)]*\)\s*;\s*$/gm, '// $dumpvars removed by backend')
 
   if (isUVM) {
-    // Remove any existing UVM includes/imports to avoid duplicates, then prepend clean ones
+    // Remove any existing UVM includes/imports to avoid duplicates
     out = out
       .replace(/^\s*`include\s+"uvm_macros\.svh"\s*$/gm, '')
       .replace(/^\s*import\s+uvm_pkg\s*::\s*\*\s*;\s*$/gm, '')
-    // Prepend after `timescale if present, otherwise at top
+    // Inject clean UVM preamble right after `timescale (or at top)
+    const preamble = '`include "uvm_macros.svh"\nimport uvm_pkg::*;\n'
     if (/`timescale/.test(out)) {
-      out = out.replace(/(^`timescale[^\n]*\n)/, '$1`include "uvm_macros.svh"\nimport uvm_pkg::*;\n')
+      out = out.replace(/(^`timescale[^\n]*\n)/m, `$1${preamble}`)
     } else {
-      out = '`include "uvm_macros.svh"\nimport uvm_pkg::*;\n' + out
+      out = preamble + out
     }
   } else {
     // Non-UVM: strip any stray UVM directives
@@ -88,6 +91,7 @@ function usesUVM(svFiles) {
     const src = fs.readFileSync(f, 'utf8')
     if (/uvm_(test|component|sequence|driver|monitor|scoreboard|env|agent)\b/.test(src)) return true
     if (/`uvm_(component|object)_utils/.test(src)) return true
+    if (/extends\s+uvm_/.test(src)) return true
   }
   return false
 }
@@ -140,9 +144,9 @@ function runSimulation(req, res) {
   if (!code && !files?.length)
     return res.status(400).json({ error: 'No code provided' })
 
-  const dir     = `/tmp/sim_${uid()}`
-  const objDir  = `${dir}/obj`
-  const simBin  = `${objDir}/V${top}`
+  const dir    = `/tmp/sim_${uid()}`
+  const objDir = `${dir}/obj`
+  const simBin = `${objDir}/V${top}`
   const vcdFile = `${dir}/dump.vcd`
 
   fs.mkdirSync(objDir, { recursive: true })
@@ -165,12 +169,9 @@ function runSimulation(req, res) {
   const driveClk = hasClkPort(svFiles)
 
   console.log(`isUVM=${isUVM} driveClk=${driveClk}`)
-  if (isUVM) {
-    const uvmCheck = UVM_DIR || '/usr/local/share/verilator/include/uvm-1.0'
-    console.log(`UVM incdir: ${uvmCheck} | uvm_pkg.sv exists: ${fs.existsSync(uvmCheck + '/uvm_pkg.sv')}`)
-  }
+  if (isUVM) console.log(`UVM dir: ${UVM_DIR} | uvm_pkg.sv exists: ${fs.existsSync(UVM_PKG)}`)
 
-  // Now process with correct isUVM flag
+  // Re-write files with processed content (UVM preamble injection, VCD stripping)
   for (const p of svFiles) {
     fs.writeFileSync(p, processCode(fs.readFileSync(p, 'utf8'), isUVM))
   }
@@ -178,23 +179,17 @@ function runSimulation(req, res) {
   const mainFile = `${dir}/main.cpp`
   fs.writeFileSync(mainFile, makeMain(top, driveClk))
 
-  // Build verilator command
-  // Verilator 5.020 does NOT have --uvm flag; include UVM manually via -I and +incdir
-  const uvmIncDir = UVM_DIR || '/usr/local/share/verilator/include/uvm-1.0'
+  // UVM flags: no --uvm flag in this Verilator version; include manually
+  const uvmSvFiles = isUVM && fs.existsSync(UVM_PKG) ? [UVM_PKG] : []
   const uvmFlags = isUVM
     ? [
-        `+incdir+${uvmIncDir}`,
-        `-I${uvmIncDir}`,
+        `+incdir+${UVM_DIR}`,
+        `-I${UVM_DIR}`,
         '+define+UVM_NO_DPI',
         '+define+UVM_REGEX_NO_DPI',
         '-Wno-UNOPTFLAT',
       ]
     : []
-
-  // For UVM: explicitly prepend uvm_pkg.sv so Verilator compiles the package
-  const uvmIncDir = isUVM ? (UVM_DIR || '/usr/local/share/verilator/include/uvm-1.0') : ''
-  const uvmPkgFile = isUVM ? `${uvmIncDir}/uvm_pkg.sv` : ''
-  const uvmSvFiles = (isUVM && fs.existsSync(uvmPkgFile)) ? [uvmPkgFile] : []
 
   const vlCmd = [
     'verilator', '--cc', '--sv', '--trace',
@@ -242,18 +237,18 @@ function runSimulation(req, res) {
 app.post('/api/simulator/run', runSimulation)
 app.post('/compile',           runSimulation)
 app.get('/health', (_, res) => res.json({
-  status: 'ok', version: 'v8',
+  status: 'ok', version: 'v9',
   node: process.version,
   verilator: VERILATOR_VERSION,
-  uvm_pkg: UVM_PKG,
-  uvm_exists: fs.existsSync(UVM_PKG)
+  uvm_dir: UVM_DIR,
+  uvm_pkg_exists: fs.existsSync(UVM_PKG)
 }))
 app.get('/api/health', (_, res) => res.json({
-  status: 'ok', version: 'v8',
+  status: 'ok', version: 'v9',
   node: process.version,
   verilator: VERILATOR_VERSION,
-  uvm_pkg: UVM_PKG,
-  uvm_exists: fs.existsSync(UVM_PKG)
+  uvm_dir: UVM_DIR,
+  uvm_pkg_exists: fs.existsSync(UVM_PKG)
 }))
 
-app.listen(PORT, () => console.log(`Backend v8 on :${PORT} | ${VERILATOR_VERSION}`))
+app.listen(PORT, () => console.log(`Backend v9 on :${PORT} | ${VERILATOR_VERSION}`))
