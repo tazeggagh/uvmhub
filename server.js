@@ -32,13 +32,19 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
 }
 
-function processCode(c) {
-  return c
-    .replace(/^\s*import\s+uvm_pkg\s*::\s*\*\s*;\s*$/gm, '')
-    .replace(/^\s*`include\s+"uvm_macros\.svh"\s*$/gm, '')
+function processCode(c, isUVM = false) {
+  let out = c
     // Strip SV-side VCD calls — C++ harness owns tracing
     .replace(/^\s*\$dumpfile\s*\([^)]*\)\s*;\s*$/gm, '// $dumpfile removed by backend')
     .replace(/^\s*\$dumpvars\s*\([^)]*\)\s*;\s*$/gm, '// $dumpvars removed by backend')
+
+  if (!isUVM) {
+    // Only strip UVM imports in non-UVM designs (avoid confusing Verilator)
+    out = out
+      .replace(/^\s*import\s+uvm_pkg\s*::\s*\*\s*;\s*$/gm, '')
+      .replace(/^\s*`include\s+"uvm_macros\.svh"\s*$/gm, '')
+  }
+  return out
 }
 
 // ── VCD Parser ────────────────────────────────────────────────────────────────
@@ -130,16 +136,17 @@ function runSimulation(req, res) {
 
   fs.mkdirSync(objDir, { recursive: true })
 
+  // Write raw files first so usesUVM() / hasClkPort() can scan them
   let svFiles = []
   if (files?.length) {
     for (const f of files) {
       const p = `${dir}/${f.name}`
-      fs.writeFileSync(p, processCode(f.code))
+      fs.writeFileSync(p, f.code)
       svFiles.push(p)
     }
   } else {
     const p = `${dir}/design.sv`
-    fs.writeFileSync(p, processCode(code))
+    fs.writeFileSync(p, code)
     svFiles.push(p)
   }
 
@@ -147,6 +154,11 @@ function runSimulation(req, res) {
   const driveClk = hasClkPort(svFiles)
 
   console.log(`isUVM=${isUVM} driveClk=${driveClk}`)
+
+  // Now process with correct isUVM flag
+  for (const p of svFiles) {
+    fs.writeFileSync(p, processCode(fs.readFileSync(p, 'utf8'), isUVM))
+  }
 
   const mainFile = `${dir}/main.cpp`
   fs.writeFileSync(mainFile, makeMain(top, driveClk))
