@@ -1,17 +1,13 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CACHE_BUST=7
+ENV CACHE_BUST=8
 
 # 1. System deps
 RUN apt-get update && apt-get install -y \
     iverilog \
     curl \
     git \
-    make \
-    gcc \
-    g++ \
-    perl \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Node 20
@@ -21,11 +17,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 RUN node --version && npm --version
 
-# 5. Debug — show exact UVM file locations
-RUN find /uvm -name "uvm_macros.svh" && find /uvm -name "uvm_pkg.sv"
+# 3. Clone UVM then show exact file locations
+RUN git clone --depth=1 https://github.com/accellera-official/uvm-core.git /uvm
+RUN find /uvm -name "uvm_pkg.sv"
+RUN find /uvm -name "uvm_macros.svh"
 
-# 3. Copy UVM from repo (uvm/ folder must exist in your repo)
-COPY uvm/ /uvm/
+WORKDIR /app
 
 # 4. App
 COPY package.json .
