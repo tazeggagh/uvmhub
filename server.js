@@ -33,13 +33,24 @@ function uid() {
 }
 
 function processCode(c, isUVM = false) {
+  // Strip SV-side VCD calls — C++ harness owns tracing
   let out = c
-    // Strip SV-side VCD calls — C++ harness owns tracing
     .replace(/^\s*\$dumpfile\s*\([^)]*\)\s*;\s*$/gm, '// $dumpfile removed by backend')
     .replace(/^\s*\$dumpvars\s*\([^)]*\)\s*;\s*$/gm, '// $dumpvars removed by backend')
 
-  if (!isUVM) {
-    // Only strip UVM imports in non-UVM designs (avoid confusing Verilator)
+  if (isUVM) {
+    // Remove any existing UVM includes/imports to avoid duplicates, then prepend clean ones
+    out = out
+      .replace(/^\s*`include\s+"uvm_macros\.svh"\s*$/gm, '')
+      .replace(/^\s*import\s+uvm_pkg\s*::\s*\*\s*;\s*$/gm, '')
+    // Prepend after `timescale if present, otherwise at top
+    if (/`timescale/.test(out)) {
+      out = out.replace(/(^`timescale[^\n]*\n)/, '$1`include "uvm_macros.svh"\nimport uvm_pkg::*;\n')
+    } else {
+      out = '`include "uvm_macros.svh"\nimport uvm_pkg::*;\n' + out
+    }
+  } else {
+    // Non-UVM: strip any stray UVM directives
     out = out
       .replace(/^\s*import\s+uvm_pkg\s*::\s*\*\s*;\s*$/gm, '')
       .replace(/^\s*`include\s+"uvm_macros\.svh"\s*$/gm, '')
@@ -164,11 +175,11 @@ function runSimulation(req, res) {
   fs.writeFileSync(mainFile, makeMain(top, driveClk))
 
   // Build verilator command
-  const uvmFlags = isUVM && UVM_PKG
-    ? [`--uvm`, `-I${UVM_DIR}`]
-    : isUVM
-      ? [`+define+UVM_NO_DPI`, `-I${UVM_DIR || '/usr/local/share/verilator/include/uvm-1.0'}`]
-      : []
+  // --uvm tells Verilator 5 to load its bundled UVM pkg; always use it for UVM designs
+  const uvmIncDir = UVM_DIR || '/usr/local/share/verilator/include/uvm-1.0'
+  const uvmFlags = isUVM
+    ? ['--uvm', `-I${uvmIncDir}`, '+define+UVM_NO_DPI']
+    : []
 
   const vlCmd = [
     'verilator', '--cc', '--sv', '--trace',
