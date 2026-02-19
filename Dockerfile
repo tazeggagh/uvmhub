@@ -1,19 +1,20 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CACHE_BUST=18
+ENV CACHE_BUST=19
 
 # ── 1. System deps ────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y \
     git autoconf flex bison help2man perl python3 \
     make libfl2 libfl-dev zlib1g zlib1g-dev \
     curl g++ ca-certificates \
+    z3 \
     && rm -rf /var/lib/apt/lists/*
 
-# ── 2. Build latest stable Verilator from source ──────────────────────────────
+# ── 2. Build recent Verilator (UVM-capable) ───────────────────────────────────
 RUN git clone https://github.com/verilator/verilator.git /tmp/verilator \
     && cd /tmp/verilator \
-    && git checkout stable \
+    && git checkout master \
     && autoconf \
     && ./configure \
     && make -j$(nproc) \
@@ -26,7 +27,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 # ── 4. Verify tools ───────────────────────────────────────────────────────────
-RUN verilator --version && node --version && npm --version
+RUN verilator --version && node --version && npm --version && z3 --version
 
 # ── 5. App ────────────────────────────────────────────────────────────────────
 WORKDIR /app
