@@ -7,13 +7,24 @@ const fs       = require('fs')
 const app  = express()
 const PORT = process.env.PORT || 3001
 
-// UVM paths — accellera-official/uvm-core cloned to /uvm
-const UVM       = '/uvm/src'
-const UVM_MACRO = '/uvm/src/macros/uvm_macros.svh'
-const UVM_PKG   = '/uvm/src/uvm_pkg.sv'
+// Find UVM files dynamically at startup
+const { execSync } = require('child_process')
 
-console.log('UVM_MACRO exists:', fs.existsSync(UVM_MACRO))
-console.log('UVM_PKG   exists:', fs.existsSync(UVM_PKG))
+const UVM     = '/uvm/src'
+const UVM_PKG = '/uvm/src/uvm_pkg.sv'
+
+// Search for uvm_macros.svh anywhere under /uvm
+let UVM_MACRO = ''
+try {
+  UVM_MACRO = execSync('find /uvm -name "uvm_macros.svh" | head -1')
+    .toString().trim()
+} catch(e) {}
+
+console.log('UVM_PKG   :', UVM_PKG,   '→ exists:', fs.existsSync(UVM_PKG))
+console.log('UVM_MACRO :', UVM_MACRO, '→ exists:', fs.existsSync(UVM_MACRO))
+
+// Derive include paths from macro file location
+const UVM_MACRO_DIR = UVM_MACRO ? require('path').dirname(UVM_MACRO) : `${UVM}/macros`
 
 app.use(cors())
 app.use(express.json({ limit: '1mb' }))
@@ -92,7 +103,7 @@ function runSimulation(req, res) {
     'iverilog',
     '-g2012',
     `-I${UVM}`,
-    `-I${UVM}/macros`,
+    `-I${UVM_MACRO_DIR}`,
     `-I${UVM}/dpi`,
     '-DUVM_NO_DPI',
     '-DUVM_REGEX_NO_DPI',
@@ -127,7 +138,7 @@ function runSimulation(req, res) {
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.post('/api/simulator/run', runSimulation)
 app.post('/compile',           runSimulation)
-app.get('/health',             (_, res) => res.json({ status: 'ok', node: process.version, uvm_macro: fs.existsSync(UVM_MACRO), uvm_pkg: fs.existsSync(UVM_PKG) }))
-app.get('/api/health',         (_, res) => res.json({ status: 'ok', node: process.version, uvm_macro: fs.existsSync(UVM_MACRO), uvm_pkg: fs.existsSync(UVM_PKG) }))
+app.get('/health',     (_, res) => res.json({ status: 'ok', node: process.version, uvm_macro: UVM_MACRO, uvm_pkg: UVM_PKG, uvm_macro_exists: fs.existsSync(UVM_MACRO), uvm_pkg_exists: fs.existsSync(UVM_PKG) }))
+app.get('/api/health', (_, res) => res.json({ status: 'ok', node: process.version, uvm_macro: UVM_MACRO, uvm_pkg: UVM_PKG, uvm_macro_exists: fs.existsSync(UVM_MACRO), uvm_pkg_exists: fs.existsSync(UVM_PKG) }))
 
 app.listen(PORT, () => console.log(`UVM Simulator Backend v3 on :${PORT}  node ${process.version}`))
